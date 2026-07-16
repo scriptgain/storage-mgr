@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Middleware\EnforceLicense;
 use App\Models\AuditLog;
 use App\Models\Setting;
 use App\Services\OfflineLicenseVerifier;
@@ -81,13 +82,7 @@ class InstanceLicenseController extends Controller
         // Clearing the key retires the online lockdown state so a removed key can
         // never leave a stale lock behind.
         if (! $key) {
-            foreach ([
-                'license_online_state', 'license_online_reason', 'license_online_message',
-                'license_online_expires_at', 'license_online_product', 'license_online_seats',
-                'license_online_last_error',
-            ] as $k) {
-                Setting::put($k, null);
-            }
+            $this->retireOnlineState();
         }
 
         AuditLog::record('license', $key ? 'Updated license key' : 'Cleared license key');
@@ -161,5 +156,127 @@ class InstanceLicenseController extends Controller
         AuditLog::record('license', 'Removed uploaded license file');
 
         return back()->with('status', 'License File Removed.');
+    }
+
+    /**
+     * The dedicated "License Key Invalid" lockdown page. Shown by EnforceLicense
+     * whenever the instance is genuinely hard-locked (expired / invalid / tampered).
+     * If the license is fine (or merely stale / unreachable) there is nothing to
+     * recover here, so bounce to the dashboard.
+     */
+    public function locked(Request $request)
+    {
+        $state = $this->hardLockState();
+        if ($state === null) {
+            return redirect()->route('dashboard');
+        }
+
+        $eff = OfflineLicenseVerifier::effectiveState();
+
+        $lock = [
+            'state' => $state,
+            'reason' => Setting::get('license_online_reason'),
+            'message' => $eff['message'] ?: Setting::get('license_online_message'),
+            'source' => $eff['source'] ?? null,
+            'checked_at' => Setting::get('license_online_checked_at'),
+        ];
+
+        return view('license.locked', compact('lock'));
+    }
+
+    /**
+     * Re-sync recovery action: re-run the online validation (the license may have
+     * been renewed or reactivated upstream). On success the lock clears and we land
+     * on the dashboard; otherwise we re-render the lockdown with the latest reason.
+     */
+    public function resync(Request $request)
+    {
+        $key = trim((string) Setting::get('license_key'));
+        if ($key === '') {
+            return redirect()->route('license.locked')
+                ->with('warning', 'No License Key Is Configured. Enter A Key Below To Continue.');
+        }
+
+        $r = (new OnlineLicenseCheck)->check();
+        AuditLog::record('license', 'Lockdown re-sync: '.($r['state'] ?? 'unchanged').' ('.($r['reason'] ?? 'ok').')');
+
+        if ($this->hardLockState() === null) {
+            return redirect()->route('dashboard')
+                ->with('status', 'License Re-Validated. This Instance Is Unlocked.');
+        }
+
+        return redirect()->route('license.locked')->with(
+            'warning',
+            ! empty($r['inconclusive'])
+                ? 'Could Not Reach The Licensing Server: '.$r['message'].' Please Try Again.'
+                : 'Still Locked: '.$r['message']
+        );
+    }
+
+    /**
+     * Enter-a-new-key recovery action: store the entered key, validate it online,
+     * and unlock on success. A definitively rejected key is cleared again (so a bad
+     * value never sticks) while the lock is preserved.
+     */
+    public function rekey(Request $request)
+    {
+        $data = $request->validate([
+            'license_key' => ['required', 'string', 'max:200'],
+        ]);
+        $key = trim($data['license_key']);
+
+        Setting::put('license_key', $key);
+        Setting::put('license_status', 'unverified');
+
+        $r = (new OnlineLicenseCheck)->check();
+        AuditLog::record('license', 'Lockdown re-key: '.($r['state'] ?? 'unchanged').' ('.($r['reason'] ?? 'ok').')');
+
+        // Success: online said valid AND nothing else is hard-locking.
+        if (($r['state'] ?? null) === 'valid' && $this->hardLockState() === null) {
+            return redirect()->route('dashboard')
+                ->with('status', 'License Validated. This Instance Is Unlocked.');
+        }
+
+        // Could not verify right now (server unreachable / unverifiable answer):
+        // keep the entered key so a Re-Sync can retry; stay locked, no error on key.
+        if (! empty($r['inconclusive'])) {
+            return redirect()->route('license.locked')
+                ->with('warning', 'Could Not Verify The Key Right Now: '.$r['message'].' Try Re-Sync.');
+        }
+
+        // Online validated the key, but a separate uploaded .lic file is still
+        // blocking. Do not discard the (valid) key; point the operator at settings.
+        if (($r['state'] ?? null) === 'valid') {
+            return redirect()->route('license.locked')
+                ->with('warning', 'The Key Is Valid Online, But An Uploaded License File Is Still Blocking. Remove It In License Settings.');
+        }
+
+        // Definitive rejection of the entered key: clear it (never persist a bad
+        // key) while leaving the online rejection state in place so the lock holds.
+        Setting::put('license_key', null);
+        Setting::put('license_status', 'unlicensed');
+
+        return redirect()->route('license.locked')
+            ->with('warning', 'License Key Invalid: '.$r['message']);
+    }
+
+    /** The effective license state IF it is a genuine hard-lock, else null. */
+    private function hardLockState(): ?string
+    {
+        $state = OfflineLicenseVerifier::effectiveState()['state'] ?? null;
+
+        return in_array($state, EnforceLicense::HARD_LOCK, true) ? $state : null;
+    }
+
+    /** Retire the persisted online lockdown state (used when the key is cleared). */
+    private function retireOnlineState(): void
+    {
+        foreach ([
+            'license_online_state', 'license_online_reason', 'license_online_message',
+            'license_online_expires_at', 'license_online_product', 'license_online_seats',
+            'license_online_last_error',
+        ] as $k) {
+            Setting::put($k, null);
+        }
     }
 }

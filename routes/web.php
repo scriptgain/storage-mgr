@@ -36,6 +36,13 @@ Route::post('/2fa', [AuthController::class, 'challengeVerify'])->middleware('thr
 
 Route::post('/logout', [AuthController::class, 'logout'])->middleware('auth')->name('logout');
 
+// License lockdown recovery (reachable while hard-locked; EnforceLicense allow-lists these).
+Route::middleware('auth')->group(function () {
+    Route::get('/license/locked', [InstanceLicenseController::class, 'locked'])->name('license.locked');
+    Route::post('/license/resync', [InstanceLicenseController::class, 'resync'])->name('license.resync');
+    Route::post('/license/rekey', [InstanceLicenseController::class, 'rekey'])->name('license.rekey');
+});
+
 // Brand favicon (public).
 Route::get('/brand/favicon', [FaviconController::class, 'svg'])->name('favicon.svg');
 Route::get('/brand/favicon-png', [FaviconController::class, 'faviconPng'])->name('favicon.png');

@@ -10,31 +10,45 @@ use Symfony\Component\HttpFoundation\Response;
 /**
  * License lockdown.
  *
- * Locks the panel whenever the EFFECTIVE license state (the more restrictive of
- * the offline .lic state and the periodic online-validation state) is present but
- * NOT 'valid' (expired / stale / revoked / tampered / invalid). Every route except
- * authentication and the license settings page redirects to the license page,
- * where a prominent non-dismissible banner explains why and offers a fix.
+ * Hard-locks the panel whenever the EFFECTIVE license state (the more restrictive
+ * of the offline .lic state and the periodic online-validation state) is a
+ * signature-verified GENUINE REJECTION: expired / invalid (revoked, suspended,
+ * not_found, over-limit) / tampered. Every management route then redirects to a
+ * dedicated "License Key Invalid" lockdown page that offers recovery (re-sync +
+ * enter a new key).
  *
- * When neither an uploaded .lic nor an online-validated key is bad, effectiveState
- * is null and nothing is blocked (safe default). This makes the middleware safe to
- * deploy fleet-wide: it only ever bites an instance whose license has gone bad.
+ * Lenient states are deliberately NOT hard-locked: 'stale' (the offline window
+ * lapsed, or the online grace expired while the server was unreachable) and the
+ * transient inconclusive / unreachable outcomes only raise the banner. None of
+ * those is a verified rejection, so locking on them would punish a network hiccup.
+ * When neither source reports a bad state the effective state is null and nothing
+ * is blocked (safe default), so this middleware is safe to run fleet-wide: it only
+ * ever bites an instance whose license has genuinely gone bad.
  */
 class EnforceLicense
 {
-    /** Route names always reachable, even while locked. */
+    /** States that constitute a genuine, signature-verified rejection: HARD lock. */
+    public const HARD_LOCK = ['expired', 'invalid', 'tampered'];
+
+    /** Route names always reachable, even while hard-locked. */
     private array $allow = [
+        // Authentication.
         'login', 'logout', 'magic-login', '2fa.challenge',
-        'settings.license.edit', 'settings.license.update',
-        'settings.license.upload', 'settings.license.sync',
-        'settings.license.file.remove', 'settings.license.check',
+        // First-run wizard.
+        'setup.index', 'setup.admin', 'setup.license',
+        // The lockdown page + its two recovery actions.
+        'license.locked', 'license.resync', 'license.rekey',
+        // Public brand / favicon assets.
         'favicon.svg', 'favicon.png', 'favicon.apple',
     ];
 
     public function handle(Request $request, Closure $next): Response
     {
         $state = OfflineLicenseVerifier::effectiveState()['state'];
-        if ($state === null || $state === 'valid') {
+
+        // Only a genuine rejection hard-locks. null / valid / stale pass through
+        // (stale still raises the banner, but never blocks management).
+        if (! in_array($state, self::HARD_LOCK, true)) {
             return $next($request);
         }
 
@@ -48,7 +62,6 @@ class EnforceLicense
             return response()->json(['message' => 'This instance is locked: license '.$state.'.'], 403);
         }
 
-        return redirect()->route('settings.license.edit')
-            ->with('warning', 'This software is locked because its license is '.$state.'. Restore a valid license to regain access.');
+        return redirect()->route('license.locked');
     }
 }
