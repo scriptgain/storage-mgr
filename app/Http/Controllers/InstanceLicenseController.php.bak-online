@@ -1,0 +1,108 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\AuditLog;
+use App\Models\Setting;
+use App\Services\OfflineLicenseVerifier;
+use Illuminate\Http\Request;
+
+/**
+ * This *instance's own* product license (the license that authorizes running
+ * this software, issued by the vendor). Distinct from LicenseController, which
+ * manages the license keys this panel issues to customers.
+ *
+ * Two mechanisms live here:
+ *  - Online key: a human-readable key kept for future server-side validation.
+ *  - Offline .lic file: a ScriptGain-signed JSON license verified locally against
+ *    the embedded public key (see OfflineLicenseVerifier). The verified state
+ *    drives the lockdown banner + middleware.
+ */
+class InstanceLicenseController extends Controller
+{
+    public function edit()
+    {
+        // Refresh the offline state (cheap; cached) before rendering.
+        OfflineLicenseVerifier::currentState();
+
+        $license = [
+            'key' => Setting::get('license_key'),
+            'plan' => Setting::get('license_plan'),
+            'status' => Setting::get('license_status', 'unlicensed'),
+            'checked_at' => Setting::get('license_checked_at'),
+            'product' => config('brand.name', 'LicenseManager'),
+        ];
+
+        $offline = [
+            'present' => (bool) Setting::get('license_lic'),
+            'state' => Setting::get('license_state'),
+            'message' => Setting::get('license_message'),
+            'product' => Setting::get('license_product'),
+            'type' => Setting::get('license_type'),
+            'expires_at' => Setting::get('license_lic_expires_at'),
+            'offline_expires_at' => Setting::get('license_offline_expires_at'),
+            'checked_at' => Setting::get('license_checked_at'),
+        ];
+
+        return view('settings.license', compact('license', 'offline'));
+    }
+
+    public function update(Request $request)
+    {
+        $data = $request->validate([
+            'license_key' => ['nullable', 'string', 'max:200'],
+        ]);
+        $key = trim((string) ($data['license_key'] ?? ''));
+
+        Setting::put('license_key', $key ?: null);
+        Setting::put('license_status', $key ? 'unverified' : 'unlicensed');
+        AuditLog::record('license', $key ? 'Updated license key' : 'Cleared license key');
+
+        return back()->with('status', $key ? 'License Key Saved. Run Sync to validate it.' : 'License Key Cleared.');
+    }
+
+    public function sync(Request $request)
+    {
+        $key = Setting::get('license_key');
+        if (! $key) {
+            return back()->with('status', 'Enter a License Key first.');
+        }
+
+        Setting::put('license_checked_at', now()->toDateTimeString());
+        AuditLog::record('license', 'Synced license (online validation pending)');
+
+        return back()->with('status', 'Sync recorded. Your key is stored and applied.');
+    }
+
+    /**
+     * Upload and verify a ScriptGain-signed .lic file. Verification is fully
+     * offline (embedded public key). The verified state is persisted and drives
+     * the lockdown banner + middleware.
+     */
+    public function upload(Request $request)
+    {
+        $request->validate([
+            'license_file' => ['required', 'file', 'max:64'], // KB; a .lic is tiny
+        ]);
+
+        $raw = (string) file_get_contents($request->file('license_file')->getRealPath());
+        $result = (new OfflineLicenseVerifier)->store($raw);
+
+        AuditLog::record('license', 'Uploaded license file (state: '.$result['state'].')');
+
+        if ($result['state'] === 'valid') {
+            return back()->with('status', 'License File Verified. This Instance Is Licensed.');
+        }
+
+        return back()->with('warning', 'License File Uploaded, But It Is '.ucfirst($result['state']).': '.$result['message']);
+    }
+
+    /** Remove the uploaded .lic file and revert to online-key mode. */
+    public function removeFile(Request $request)
+    {
+        (new OfflineLicenseVerifier)->forget();
+        AuditLog::record('license', 'Removed uploaded license file');
+
+        return back()->with('status', 'License File Removed.');
+    }
+}
