@@ -23,7 +23,6 @@ return Application::configure(basePath: dirname(__DIR__))
             'security.policy' => \App\Http\Middleware\EnforceSecurityPolicy::class,
             'firewall' => \App\Http\Middleware\FirewallGuard::class,
             'license.offline' => \App\Http\Middleware\EnforceLicense::class,
-            'setup' => \App\Http\Middleware\EnsureSetup::class,
         ]);
 
         // Perimeter guard on every web request: IP bans + optional allowlist,
@@ -32,17 +31,6 @@ return Application::configure(basePath: dirname(__DIR__))
             \App\Http\Middleware\FirewallGuard::class,
             \App\Http\Middleware\EnforceLicense::class,
         ]);
-
-        // First-run guard: force a fresh install through /setup until complete.
-        $middleware->web(append: [
-            \App\Http\Middleware\EnsureSetup::class,
-        ]);
-        // Run the setup gate BEFORE auth so a brand-new install (no admin yet,
-        // no session) lands on /setup instead of dead-ending at /login.
-        $middleware->prependToPriorityList(
-            before: \Illuminate\Contracts\Auth\Middleware\AuthenticatesRequests::class,
-            prepend: \App\Http\Middleware\EnsureSetup::class,
-        );
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->shouldRenderJsonWhen(

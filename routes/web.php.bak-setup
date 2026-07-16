@@ -3,7 +3,6 @@
 use App\Http\Controllers\AccessKeyController;
 use App\Http\Controllers\ApiTokenController;
 use App\Http\Controllers\Auth\AuthController;
-use App\Http\Controllers\SetupController;
 use App\Http\Controllers\AuditLogController;
 use App\Http\Controllers\BrandingController;
 use App\Http\Controllers\BucketController;
@@ -113,12 +112,4 @@ Route::middleware(['auth', 'security.policy'])->group(function () {
     Route::get('settings/maintenance', [\App\Http\Controllers\MaintenanceController::class, 'edit'])->name('settings.maintenance.edit');
     Route::put('settings/maintenance', [\App\Http\Controllers\MaintenanceController::class, 'update'])->name('settings.maintenance.update');
     Route::post('settings/maintenance/run', [\App\Http\Controllers\MaintenanceController::class, 'runNow'])->name('settings.maintenance.run');
-});
-
-// First-run setup wizard. Not behind 'auth': step 1 (create admin) runs as a
-// guest, step 2 (license) runs authed. Access is governed by EnsureSetup.
-Route::prefix('setup')->group(function () {
-    Route::get('/', [SetupController::class, 'index'])->name('setup.index');
-    Route::post('/admin', [SetupController::class, 'storeAdmin'])->name('setup.admin');
-    Route::post('/license', [SetupController::class, 'storeLicense'])->name('setup.license');
 });

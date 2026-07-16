@@ -25,11 +25,3 @@ _ide_helper.php
 Homestead.json
 Homestead.yaml
 Thumbs.db
-
-/public/downloads/
-/public/agent/
-/dist/
-/agent/bin/
-*.pem
-*.key
-*.crt
