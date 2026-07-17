@@ -91,10 +91,15 @@
                         <x-table>
                             <thead><tr>
                                 <th class="w-10">
-                                    <input type="checkbox" x-on:change="toggleAll($event)"
-                                        :checked="selected.length > 0 && selected.length === allIds.length"
-                                        :disabled="allIds.length === 0"
-                                        class="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500 align-middle" aria-label="Select all objects">
+                                    <button type="button" role="switch"
+                                        :aria-checked="(allIds.length > 0 && selected.length === allIds.length).toString()"
+                                        @click="selected = (allIds.length > 0 && selected.length === allIds.length) ? [] : [...allIds]"
+                                        :class="(allIds.length > 0 && selected.length === allIds.length) ? 'bg-brand-600' : 'bg-slate-300'"
+                                        class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors align-middle disabled:opacity-40"
+                                        :disabled="allIds.length === 0" aria-label="Select all objects">
+                                        <span :class="(allIds.length > 0 && selected.length === allIds.length) ? 'translate-x-6' : 'translate-x-1'"
+                                            class="inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform"></span>
+                                    </button>
                                 </th>
                                 <th>Key</th><th>Type</th><th>Size</th><th>Last Modified</th><th class="text-right">Actions</th>
                             </tr></thead>
@@ -102,8 +107,15 @@
                                 @foreach ($objects as $o)
                                     <tr>
                                         <td>
-                                            <input type="checkbox" x-model.number="selected" value="{{ $o->id }}" x-on:change="confirming = false"
-                                                class="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500 align-middle" aria-label="Select object">
+                                            <button type="button" role="switch"
+                                                :aria-checked="selected.includes({{ $o->id }}).toString()"
+                                                @click="selected.includes({{ $o->id }}) ? selected.splice(selected.indexOf({{ $o->id }}), 1) : selected.push({{ $o->id }}); confirming = false"
+                                                :class="selected.includes({{ $o->id }}) ? 'bg-brand-600' : 'bg-slate-300'"
+                                                class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors align-middle"
+                                                aria-label="Select object">
+                                                <span :class="selected.includes({{ $o->id }}) ? 'translate-x-6' : 'translate-x-1'"
+                                                    class="inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform"></span>
+                                            </button>
                                         </td>
                                         <td class="font-mono text-xs">
                                             <span class="inline-flex items-center gap-1.5">
