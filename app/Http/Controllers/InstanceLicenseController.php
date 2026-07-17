@@ -29,10 +29,25 @@ class InstanceLicenseController extends Controller
         // Refresh the offline state (cheap; cached) before rendering.
         OfflineLicenseVerifier::currentState();
 
+        // "License Key Status" card must reflect the EFFECTIVE license state (the
+        // same source the "Online License Status" card and the lockdown banner
+        // use) rather than the legacy, often-stale `license_status` setting, so the
+        // two cards agree. Prefer the combined offline/online effective state, fall
+        // back to the online state, and only then to the legacy setting.
+        $effectiveState = OfflineLicenseVerifier::effectiveState()['state'] ?? OnlineLicenseCheck::state();
+        $status = match ($effectiveState) {
+            'valid', 'validated' => 'valid',
+            'expired'            => 'expired',
+            'invalid', 'tampered' => 'invalid',
+            'stale'              => 'stale',
+            null                 => Setting::get('license_status', 'unlicensed'),
+            default              => (string) $effectiveState,
+        };
+
         $license = [
             'key' => Setting::get('license_key'),
             'plan' => Setting::get('license_plan'),
-            'status' => Setting::get('license_status', 'unlicensed'),
+            'status' => $status,
             'checked_at' => Setting::get('license_checked_at'),
             'product' => config('brand.name', 'LicenseManager'),
         ];

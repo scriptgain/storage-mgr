@@ -98,6 +98,11 @@ class OnlineLicenseCheck
         if (($response['valid'] ?? null) === true) {
             $this->persistVerified('valid', null, 'License validated online.', $response);
 
+            // Genuine online validation: also fetch + store the signed .lic so the
+            // OFFLINE verifier is satisfied too (both status cards then agree).
+            // Fail-soft — never affects the online result.
+            $this->fetchAndStoreOfflineLicense($key, $url);
+
             return ['state' => 'valid', 'reason' => null, 'message' => 'License validated online.'];
         }
 
@@ -112,6 +117,43 @@ class OnlineLicenseCheck
         $this->persistVerified($state, $reason, $message, $response);
 
         return ['state' => $state, 'reason' => $reason, 'message' => $message];
+    }
+
+    /**
+     * On a genuine online validation, fetch this instance's signed offline .lic
+     * from the vendor and hand it to the OfflineLicenseVerifier so the offline
+     * path is satisfied without a manual upload.
+     *
+     * The offline endpoint is derived from the validate URL:
+     *   https://scriptgain.com/v1/validate  ->  https://scriptgain.com/v1
+     *   GET {base}/licenses/{key}/offline
+     *
+     * Strictly fail-soft: any transport error, non-2xx, or empty body is ignored
+     * and MUST NOT change or fail the online result.
+     */
+    private function fetchAndStoreOfflineLicense(string $key, string $validateUrl): void
+    {
+        try {
+            $base = rtrim((string) preg_replace('#/validate/?$#', '', $validateUrl), '/');
+            if ($base === '') {
+                return;
+            }
+
+            $resp = Http::timeout(5)
+                ->acceptJson()
+                ->get($base.'/licenses/'.rawurlencode($key).'/offline');
+
+            if (! $resp->successful()) {
+                return;
+            }
+
+            $body = trim((string) $resp->body());
+            if ($body !== '') {
+                (new OfflineLicenseVerifier)->store($body);
+            }
+        } catch (\Throwable $e) {
+            // Fail-soft: a missing/failed .lic fetch never affects the online result.
+        }
     }
 
     /** Persist a VERIFIED outcome (valid or genuine failure). Resets the grace clock. */
