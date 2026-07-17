@@ -224,6 +224,7 @@
     <main class="flex-1 py-8">
         <div class="{{ $maxWidth }} mx-auto px-4 sm:px-6 lg:px-8">
             <x-license-banner class="mb-6" />
+            <x-update-banner />
             @if (session('status'))
                 <div class="mb-6"><x-alert type="success">{{ session('status') }}</x-alert></div>
             @endif
@@ -250,7 +251,7 @@
     <footer class="border-t border-slate-200 bg-white">
         <div class="{{ $maxWidth }} mx-auto px-4 sm:px-6 lg:px-8 py-4 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
             <span>{{ config('brand.name') }} &middot; {{ config('brand.tagline') }}</span>
-            <span class="tabular">v0.1.0</span>
+            <span class="tabular">v{{ \App\Services\UpdateService::currentVersion() }}</span>
         </div>
     </footer>
 
