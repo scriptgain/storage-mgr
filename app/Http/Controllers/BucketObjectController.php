@@ -62,4 +62,29 @@ class BucketObjectController extends Controller
 
         return back()->with('status', "\"{$key}\" deleted.");
     }
+
+    /**
+     * Bulk-delete selected objects from this bucket. Only operates on the ids
+     * explicitly submitted that belong to this bucket.
+     */
+    public function bulkDestroy(Request $request, Bucket $bucket)
+    {
+        abort_unless($bucket->isVisibleTo(auth()->user()), 403);
+
+        $data = $request->validate([
+            'ids' => ['required', 'array', 'min:1'],
+            'ids.*' => ['integer'],
+        ]);
+
+        $ids = $bucket->objects()->whereIn('id', $data['ids'])->pluck('id');
+        if ($ids->isEmpty()) {
+            return back()->with('warning', 'No matching objects were selected.');
+        }
+
+        $count = $bucket->objects()->whereIn('id', $ids->all())->delete();
+        $bucket->refreshStats();
+        AuditLog::record('deleted', "Bulk deleted {$count} object".($count === 1 ? '' : 's')." from bucket \"{$bucket->name}\"");
+
+        return back()->with('status', $count.' object'.($count === 1 ? '' : 's').' deleted.');
+    }
 }

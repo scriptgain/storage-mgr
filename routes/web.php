@@ -55,6 +55,7 @@ Route::middleware(['auth', 'security.policy'])->group(function () {
     // Buckets + the object browser nested inside a bucket.
     Route::resource('buckets', BucketController::class);
     Route::post('buckets/{bucket}/objects', [BucketObjectController::class, 'store'])->name('buckets.objects.store');
+    Route::delete('buckets/{bucket}/objects/bulk', [BucketObjectController::class, 'bulkDestroy'])->name('buckets.objects.bulk-destroy');
     Route::delete('buckets/{bucket}/objects/{object}', [BucketObjectController::class, 'destroy'])->name('buckets.objects.destroy');
 
     // Access keys (S3-style credential pairs). No edit screen — status toggles instead.
