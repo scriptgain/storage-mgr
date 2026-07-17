@@ -49,7 +49,7 @@
             </x-card>
 
             <x-card title="Automatic Updates" subtitle="When on, this install applies new signed releases on its own overnight.">
-                <form method="POST" action="{{ route('settings.updates.auto') }}" x-on:change="$el.submit()">
+                <form method="POST" action="{{ route('settings.updates.auto') }}" x-data x-on:change="$el.submit()">
                     @csrf
                     <style>
                         .up-sw{position:relative;display:inline-flex;height:1.5rem;width:2.75rem;flex:0 0 auto;align-items:center;border-radius:9999px;background:#cbd5e1;transition:background .15s;}
@@ -60,7 +60,6 @@
                     </style>
                     {{-- Native checkbox so toggling fires a real change event and the form saves. --}}
                     <label class="flex items-start gap-3 cursor-pointer select-none">
-                        <input type="hidden" name="auto" value="0">
                         <span class="up-sw"><input type="checkbox" name="auto" value="1" @checked($status['auto'])><i></i></span>
                         <span class="text-sm">
                             <span class="font-medium text-slate-900">Install Updates Automatically</span>
