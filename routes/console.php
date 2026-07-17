@@ -21,3 +21,8 @@ Schedule::command('license:check-online')->cron('37 3 */2 * *')->withoutOverlapp
 // admin "Update Now" request the scheduler services within a minute.
 Schedule::command('app:update')->dailyAt('04:10')->when(fn () => \App\Services\UpdateService::autoEnabled())->withoutOverlapping();
 Schedule::command('app:update')->everyMinute()->when(fn () => \App\Models\Setting::get('update_requested') === '1')->withoutOverlapping();
+
+// Automated remote database backup (self-gates on enabled flag + frequency);
+// plus an admin "Run Backup Now" request serviced within a minute.
+Schedule::command('db-backup:run')->dailyAt(\App\Models\Setting::get('dbbackup_time') ?: '02:30')->withoutOverlapping();
+Schedule::command('db-backup:run --force')->everyMinute()->when(fn () => \App\Models\Setting::get('dbbackup_requested') === '1')->withoutOverlapping();

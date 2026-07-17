@@ -3,11 +3,14 @@
         ['Email Delivery', 'Outgoing mail transport, sender identity, and test send.', 'envelope', route('settings.email.edit'), true],
         ['General', 'Regional display, defaults, and security.', 'settings', route('settings.general.edit'), true],
         ['Notifications', 'Email alerts for bucket and access-key events.', 'bell', route('settings.notifications.edit'), true],
+        ['Integrations', 'Slack, Discord, Telegram, and webhook alerts.', 'bolt', route('settings.integrations.edit'), true],
         ['Branding', 'Product name, tagline, and accent color.', 'edit', route('settings.branding.edit'), true],
         ['API Tokens', 'Create and revoke full-access API tokens.', 'key', route('settings.tokens.index'), true],
         ['Password', 'Change your account password.', 'lock', route('settings.password.edit'), true],
         ['Two-Factor Auth', 'Add a TOTP second factor to your login.', 'shield', route('settings.2fa.show'), true],
         ['Instance License', 'This installation\'s own license key and entitlement.', 'license-key', route('settings.license.edit'), true],
+        ['Updates', 'Check for and install the latest release.', 'download', route('settings.updates.show'), true],
+        ['Backup & Restore', 'Back up and restore this panel configuration.', 'archive', route('settings.backup.index'), true],
         ['Maintenance', 'Bucket housekeeping, access-key hygiene, and audit pruning windows.', 'refresh', route('settings.maintenance.edit'), true],
     ];
     if (auth()->user()->isAdmin()) {
