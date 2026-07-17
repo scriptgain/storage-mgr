@@ -79,6 +79,10 @@ Route::middleware(['auth', 'security.policy'])->group(function () {
     Route::get('settings/license', [InstanceLicenseController::class, 'edit'])->name('settings.license.edit');
     Route::put('settings/license', [InstanceLicenseController::class, 'update'])->name('settings.license.update');
     Route::post('settings/license/sync', [InstanceLicenseController::class, 'sync'])->name('settings.license.sync');
+    Route::get('settings/updates', [\App\Http\Controllers\UpdateController::class, 'show'])->name('settings.updates.show');
+    Route::post('settings/updates/check', [\App\Http\Controllers\UpdateController::class, 'check'])->name('settings.updates.check');
+    Route::post('settings/updates/apply', [\App\Http\Controllers\UpdateController::class, 'apply'])->name('settings.updates.apply');
+    Route::post('settings/updates/auto', [\App\Http\Controllers\UpdateController::class, 'toggleAuto'])->name('settings.updates.auto');
     Route::post('settings/license/upload', [InstanceLicenseController::class, 'upload'])->name('settings.license.upload');
     Route::delete('settings/license/file', [InstanceLicenseController::class, 'removeFile'])->name('settings.license.file.remove');
     Route::post('settings/license/check-online', [InstanceLicenseController::class, 'checkNow'])->name('settings.license.check');

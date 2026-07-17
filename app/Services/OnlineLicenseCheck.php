@@ -169,6 +169,9 @@ class OnlineLicenseCheck
         Setting::put('license_online_product', $response['product'] ?? null);
         Setting::put('license_online_seats', isset($response['seats']) ? json_encode($response['seats']) : null);
         Setting::put('license_online_last_error', null);
+
+        // Capture the signed version/download info for the self-updater.
+        \App\Services\UpdateService::recordFromLicense($response);
     }
 
     /**
