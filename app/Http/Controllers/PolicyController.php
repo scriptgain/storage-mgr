@@ -80,6 +80,30 @@ class PolicyController extends Controller
         return redirect()->route('policies.index')->with('status', "Policy \"{$name}\" deleted.");
     }
 
+    /**
+     * Bulk-delete selected policies. Only the submitted ids are touched, and
+     * only policies the current user is allowed to see.
+     */
+    public function bulkDestroy(Request $request)
+    {
+        $data = $request->validate([
+            'ids' => ['required', 'array', 'min:1'],
+            'ids.*' => ['integer'],
+        ]);
+
+        $ids = Policy::visibleTo(auth()->user())->whereIn('id', $data['ids'])->pluck('id');
+
+        if ($ids->isEmpty()) {
+            return back()->with('warning', 'No matching policies were selected.');
+        }
+
+        $count = Policy::whereIn('id', $ids->all())->delete();
+
+        AuditLog::record('deleted', "Bulk deleted {$count} polic".($count === 1 ? 'y' : 'ies').'.');
+
+        return back()->with('status', $count.' polic'.($count === 1 ? 'y' : 'ies').' deleted.');
+    }
+
     private function guard(Policy $policy): void
     {
         abort_unless($policy->isVisibleTo(auth()->user()), 403);

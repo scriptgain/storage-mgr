@@ -81,6 +81,30 @@ class AccessKeyController extends Controller
         return redirect()->route('access-keys.index')->with('status', "Access key \"{$name}\" deleted.");
     }
 
+    /**
+     * Bulk-delete selected access keys. Only the submitted ids are touched, and
+     * only access keys the current user is allowed to see.
+     */
+    public function bulkDestroy(Request $request)
+    {
+        $data = $request->validate([
+            'ids' => ['required', 'array', 'min:1'],
+            'ids.*' => ['integer'],
+        ]);
+
+        $ids = AccessKey::visibleTo(auth()->user())->whereIn('id', $data['ids'])->pluck('id');
+
+        if ($ids->isEmpty()) {
+            return back()->with('warning', 'No matching access keys were selected.');
+        }
+
+        $count = AccessKey::whereIn('id', $ids->all())->delete();
+
+        AuditLog::record('deleted', "Bulk deleted {$count} access key".($count === 1 ? '' : 's').'.');
+
+        return back()->with('status', $count.' access key'.($count === 1 ? '' : 's').' deleted.');
+    }
+
     private function guard(AccessKey $accessKey): void
     {
         abort_unless($accessKey->isVisibleTo(auth()->user()), 403);

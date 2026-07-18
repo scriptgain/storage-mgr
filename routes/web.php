@@ -53,16 +53,19 @@ Route::middleware(['auth', 'security.policy'])->group(function () {
     Route::get('/', DashboardController::class)->name('dashboard');
 
     // Buckets + the object browser nested inside a bucket.
+    Route::delete('buckets/bulk', [BucketController::class, 'bulkDestroy'])->name('buckets.bulk-destroy');
     Route::resource('buckets', BucketController::class);
     Route::post('buckets/{bucket}/objects', [BucketObjectController::class, 'store'])->name('buckets.objects.store');
     Route::delete('buckets/{bucket}/objects/bulk', [BucketObjectController::class, 'bulkDestroy'])->name('buckets.objects.bulk-destroy');
     Route::delete('buckets/{bucket}/objects/{object}', [BucketObjectController::class, 'destroy'])->name('buckets.objects.destroy');
 
     // Access keys (S3-style credential pairs). No edit screen — status toggles instead.
+    Route::delete('access-keys/bulk', [AccessKeyController::class, 'bulkDestroy'])->name('access-keys.bulk-destroy');
     Route::resource('access-keys', AccessKeyController::class)->except(['show', 'edit', 'update']);
     Route::post('access-keys/{access_key}/status', [AccessKeyController::class, 'setStatus'])->name('access-keys.setstatus');
 
     // Policies (S3-style JSON documents attachable to access keys).
+    Route::delete('policies/bulk', [PolicyController::class, 'bulkDestroy'])->name('policies.bulk-destroy');
     Route::resource('policies', PolicyController::class);
 
     // Settings.

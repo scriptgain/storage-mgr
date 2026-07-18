@@ -83,6 +83,30 @@ class BucketController extends Controller
         return redirect()->route('buckets.index')->with('status', "Bucket \"{$name}\" deleted.");
     }
 
+    /**
+     * Bulk-delete selected buckets. Only the submitted ids are touched, and
+     * only buckets the current user is allowed to see.
+     */
+    public function bulkDestroy(Request $request)
+    {
+        $data = $request->validate([
+            'ids' => ['required', 'array', 'min:1'],
+            'ids.*' => ['integer'],
+        ]);
+
+        $ids = Bucket::visibleTo(auth()->user())->whereIn('id', $data['ids'])->pluck('id');
+
+        if ($ids->isEmpty()) {
+            return back()->with('warning', 'No matching buckets were selected.');
+        }
+
+        $count = Bucket::whereIn('id', $ids->all())->delete();
+
+        AuditLog::record('deleted', "Bulk deleted {$count} bucket".($count === 1 ? '' : 's').'.');
+
+        return back()->with('status', $count.' bucket'.($count === 1 ? '' : 's').' deleted.');
+    }
+
     private function guard(Bucket $bucket): void
     {
         abort_unless($bucket->isVisibleTo(auth()->user()), 403);
