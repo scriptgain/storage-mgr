@@ -10,25 +10,29 @@ use Symfony\Component\HttpFoundation\Response;
 /**
  * License lockdown.
  *
- * Hard-locks the panel whenever the EFFECTIVE license state (the more restrictive
- * of the offline .lic state and the periodic online-validation state) is a
- * signature-verified GENUINE REJECTION: expired / invalid (revoked, suspended,
- * not_found, over-limit) / tampered. Every management route then redirects to a
- * dedicated "License Key Invalid" lockdown page that offers recovery (re-sync +
- * enter a new key).
+ * Hard-locks the panel only on a MALICIOUS or DEAD license: a tampered/forged
+ * signature, or a signature-verified authoritative rejection ('invalid' =
+ * revoked / suspended / not_found / over-limit). Those get no benefit of the
+ * doubt — every management route redirects to a dedicated "License Key Invalid"
+ * lockdown page that offers recovery (re-sync + enter a new key).
  *
- * Lenient states are deliberately NOT hard-locked: 'stale' (the offline window
- * lapsed, or the online grace expired while the server was unreachable) and the
- * transient inconclusive / unreachable outcomes only raise the banner. None of
- * those is a verified rejection, so locking on them would punish a network hiccup.
- * When neither source reports a bad state the effective state is null and nothing
- * is blocked (safe default), so this middleware is safe to run fleet-wide: it only
- * ever bites an instance whose license has genuinely gone bad.
+ * An HONEST LAPSE is treated gently: 'expired' (validly signed, just past its
+ * date) does NOT hard-lock — it raises the renewal banner and keeps working, so
+ * a customer is never bricked mid-work. Likewise 'stale' (offline window lapsed
+ * or online grace expired while unreachable) and the transient inconclusive /
+ * unreachable outcomes only raise the banner. When neither source reports a bad
+ * state the effective state is null and nothing is blocked (safe default), so
+ * this middleware is safe to run fleet-wide: it only ever bites an instance whose
+ * license is genuinely forged or dead.
  */
 class EnforceLicense
 {
-    /** States that constitute a genuine, signature-verified rejection: HARD lock. */
-    public const HARD_LOCK = ['expired', 'invalid', 'tampered'];
+    /**
+     * States that HARD-lock: a forged/tampered signature or a signature-verified
+     * authoritative rejection (revoked/suspended). 'expired' is deliberately NOT
+     * here — an honest lapse gets a grace banner, never a brick.
+     */
+    public const HARD_LOCK = ['invalid', 'tampered'];
 
     /** Route names always reachable, even while hard-locked. */
     private array $allow = [
