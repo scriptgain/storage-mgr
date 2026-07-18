@@ -14,16 +14,14 @@
     <div class="lg:w-1/2 bg-chrome text-white px-8 py-12 lg:p-16 flex flex-col justify-between">
         <x-brand class="text-white" />
         <div class="hidden lg:block max-w-md">
-            <h2 class="text-3xl font-semibold tracking-tight">Licensing you fully control.</h2>
+            <h2 class="text-3xl font-semibold tracking-tight">Object Storage You Fully Control.</h2>
             <p class="mt-4 text-slate-300 leading-relaxed">
-                One control panel for every product, plan, and customer. Issue keys,
-                enforce entitlements, and verify offline, all signed with your own keys
-                on your own infrastructure.
+                One control panel for every bucket, key, and policy. Store objects behind an S3-compatible API, manage access, and scale on your own infrastructure.
             </p>
             <ul class="mt-8 space-y-3 text-sm text-slate-300">
-                <li class="flex items-center gap-2"><x-icon name="check-circle" class="w-5 h-5 text-brand-400" /> RSA-signed keys, verified online or offline</li>
-                <li class="flex items-center gap-2"><x-icon name="check-circle" class="w-5 h-5 text-brand-400" /> Entitlements, activations &amp; one-click revocation</li>
-                <li class="flex items-center gap-2"><x-icon name="check-circle" class="w-5 h-5 text-brand-400" /> Self-hosted panel + distributable verification nodes</li>
+                <li class="flex items-center gap-2"><x-icon name="check-circle" class="w-5 h-5 text-brand-400" /> S3-compatible API for buckets &amp; objects</li>
+                <li class="flex items-center gap-2"><x-icon name="check-circle" class="w-5 h-5 text-brand-400" /> Access keys &amp; fine-grained bucket policies</li>
+                <li class="flex items-center gap-2"><x-icon name="check-circle" class="w-5 h-5 text-brand-400" /> Self-hosted object storage that scales with your fleet</li>
             </ul>
         </div>
         <p class="text-xs text-slate-400">{{ config('brand.name') }} &middot; {{ config('brand.tagline') }}</p>
