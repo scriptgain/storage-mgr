@@ -17,6 +17,15 @@ return [
     // ScriptGain's validation endpoint. POST {"key": "..."} -> signed response.
     'validate_url' => env('LICENSE_VALIDATE_URL', 'https://scriptgain.com/v1/validate'),
 
+    // This product's ScriptGain slug. Passed to the compiled guard for reporting
+    // (product_match); mismatch is currently advisory, not enforced.
+    'product' => env('LICENSE_PRODUCT'),
+
+    // The compiled license-enforcement helper. When present and executable, the
+    // RSA signature verification + state decision run in this binary instead of
+    // inline PHP. When absent, the app falls back to PHP verification (fail-soft).
+    'guard_binary' => env('LICENSE_GUARD_BINARY', base_path('bin/licenseguard')),
+
     // How often the online check runs (scheduled + opportunistic boot check).
     'online_check_interval_days' => (int) env('LICENSE_ONLINE_INTERVAL_DAYS', 2),
 

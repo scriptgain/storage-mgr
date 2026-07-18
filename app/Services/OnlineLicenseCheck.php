@@ -82,9 +82,17 @@ class OnlineLicenseCheck
         // Verify the signature with the SAME canonical routine as the offline path.
         $verifier = new OfflineLicenseVerifier;
         $canonical = $verifier->canonicalize($body['response']);
-        $sig = base64_decode((string) $body['signature'], true);
-        $ok = $sig !== false
-            && openssl_verify($canonical, $sig, $verifier->publicKey(), OPENSSL_ALGO_SHA256) === 1;
+
+        // Prefer the compiled guard (unpatchable signature verification); fall
+        // back to inline openssl_verify only when the helper is not installed.
+        $guard = LicenseGuard::signatureValid($canonical, (string) $body['signature'], config('licensing.product'));
+        if ($guard !== null) {
+            $ok = $guard;
+        } else {
+            $sig = base64_decode((string) $body['signature'], true);
+            $ok = $sig !== false
+                && openssl_verify($canonical, $sig, $verifier->publicKey(), OPENSSL_ALGO_SHA256) === 1;
+        }
 
         if (! $ok) {
             // Signed by someone other than ScriptGain (or corrupted / MITM proxy).

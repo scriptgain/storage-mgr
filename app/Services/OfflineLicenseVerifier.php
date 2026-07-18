@@ -91,6 +91,17 @@ PEM;
         $payload = $doc['license'];
         $canonical = $this->canonicalize($payload);
 
+        // Prefer the compiled guard: it verifies the RSA signature against the
+        // embedded ScriptGain key AND decides the license state in compiled code a
+        // customer cannot patch. It implements the identical rules used below, so
+        // the accepted set of licenses is unchanged. Falls back to the inline PHP
+        // path when the helper is not installed (fail-soft).
+        $verdict = LicenseGuard::evaluate($canonical, (string) $doc['signature'], config('licensing.product'));
+        if ($verdict !== null) {
+            return $this->result($verdict['state'], $payload, $this->stateMessage($verdict['state'], $payload));
+        }
+
+        // --- PHP fallback (compiled guard unavailable) ------------------------
         $signature = base64_decode((string) $doc['signature'], true);
         $ok = $signature !== false
             && openssl_verify($canonical, $signature, $this->publicKey(), OPENSSL_ALGO_SHA256) === 1;
@@ -250,6 +261,27 @@ PEM;
         usort($candidates, fn ($a, $b) => ($rank[$b['state']] ?? 0) <=> ($rank[$a['state']] ?? 0));
 
         return $candidates[0];
+    }
+
+    /**
+     * The human message for a state returned by the compiled guard. Mirrors the
+     * strings the inline PHP path produces so the settings page / banner read
+     * identically whichever path decided the state.
+     *
+     * @param  array<string,mixed>  $payload
+     */
+    private function stateMessage(string $state, array $payload): string
+    {
+        $expiresAt = $this->parse($payload['expires_at'] ?? null);
+        $offlineExpiresAt = $this->parse($payload['offline_expires_at'] ?? null);
+
+        return match ($state) {
+            'expired' => 'This license expired on '.($expiresAt ? $expiresAt->toDayDateTimeString() : 'an earlier date').'.',
+            'stale' => 'The offline verification window lapsed'.($offlineExpiresAt ? ' on '.$offlineExpiresAt->toDayDateTimeString() : '').'. Re-download your license file to keep running offline.',
+            'invalid' => 'This license is not active. It may have been revoked or suspended.',
+            'tampered' => 'The license signature is invalid. The file may have been altered or corrupted.',
+            default => 'License valid.',
+        };
     }
 
     private function parse($value): ?Carbon
