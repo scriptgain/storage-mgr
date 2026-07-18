@@ -81,22 +81,12 @@
         $nav = [
             ['type' => 'link', 'label' => 'Dashboard', 'href' => route('dashboard'), 'icon' => 'dashboard',
                 'active' => request()->routeIs('dashboard')],
-            ['type' => 'group', 'label' => 'Infrastructure', 'icon' => 'server',
-                'active' => request()->routeIs('locations.*', 'directors.*', 'hosts.*', 'repositories.*'),
-                'items' => [
-                    ['Locations', route('locations.index'), 'home', request()->routeIs('locations.*')],
-                    ['Directors', route('directors.index'), 'cloud', request()->routeIs('directors.*')],
-                    ['Hosts', route('hosts.index'), 'server', request()->routeIs('hosts.*')],
-                    ['Repositories', route('repositories.index'), 'archive', request()->routeIs('repositories.*')],
-                ]],
-            ['type' => 'group', 'label' => 'Backups', 'icon' => 'clock',
-                'active' => request()->routeIs('jobs.*', 'schedule-templates.*', 'snapshots.*', 'restores.*'),
-                'items' => [
-                    ['Backup Jobs', route('jobs.index'), 'clock', request()->routeIs('jobs.*')],
-                    ['Schedule Templates', route('schedule-templates.index'), 'clock', request()->routeIs('schedule-templates.*')],
-                    ['Snapshots', route('snapshots.index'), 'archive', request()->routeIs('snapshots.*')],
-                    ['Restores', route('restores.index'), 'restore', request()->routeIs('restores.*')],
-                ]],
+            ['type' => 'link', 'label' => 'Buckets', 'href' => route('buckets.index'), 'icon' => 'archive',
+                'active' => request()->routeIs('buckets.*')],
+            ['type' => 'link', 'label' => 'Access Keys', 'href' => route('access-keys.index'), 'icon' => 'key',
+                'active' => request()->routeIs('access-keys.*')],
+            ['type' => 'link', 'label' => 'Policies', 'href' => route('policies.index'), 'icon' => 'shield',
+                'active' => request()->routeIs('policies.*')],
         ];
         // If the current route is inside a top-nav group, expose that group's items
         // so the layout can render a left menu for it (same pattern as settings).
@@ -153,7 +143,7 @@
                     </nav>
                 </div>
                 <div class="flex items-center gap-2 shrink-0">
-                    <x-button href="{{ route('jobs.create') }}" icon="plus" size="sm"><span class="hidden sm:inline">New Backup Job</span><span class="sm:hidden">New Job</span></x-button>
+                    <x-button href="{{ route('buckets.create') }}" icon="plus" size="sm"><span class="hidden sm:inline">New Bucket</span><span class="sm:hidden">New</span></x-button>
                 </div>
             </div>
         </div>
@@ -197,14 +187,9 @@
         $rn = request()->route()?->getName() ?? '';
         $section = strtok($rn, '.');
         $sectionMap = [
-            'locations' => ['Locations', 'locations.index'],
-            'directors' => ['Directors', 'directors.index'],
-            'hosts' => ['Hosts', 'hosts.index'],
-            'repositories' => ['Repositories', 'repositories.index'],
-            'jobs' => ['Backup Jobs', 'jobs.index'],
-            'snapshots' => ['Snapshots', 'snapshots.index'],
-            'restores' => ['Restores', 'restores.index'],
-            'schedule-templates' => ['Schedule Templates', 'schedule-templates.index'],
+            'buckets' => ['Buckets', 'buckets.index'],
+            'access-keys' => ['Access Keys', 'access-keys.index'],
+            'policies' => ['Policies', 'policies.index'],
             'settings' => ['Settings', 'settings.index'],
         ];
         $crumbs = [];
@@ -268,7 +253,7 @@
     <footer class="border-t border-slate-200 bg-white">
         <div class="{{ $maxWidth }} mx-auto px-4 sm:px-6 lg:px-8 py-4 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
             <span>{{ config('brand.name') }} &middot; {{ config('brand.tagline') }}</span>
-            <span class="tabular">v{{ \App\Services\UpdateService::currentVersion() }} &middot; kopia 0.23.1</span>
+            <span class="tabular">v{{ \App\Services\UpdateService::currentVersion() }}</span>
         </div>
     </footer>
 
