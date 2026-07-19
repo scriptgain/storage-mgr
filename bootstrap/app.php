@@ -43,6 +43,15 @@ return Application::configure(basePath: dirname(__DIR__))
             before: \Illuminate\Contracts\Auth\Middleware\AuthenticatesRequests::class,
             prepend: \App\Http\Middleware\EnsureSetup::class,
         );
+
+        // Read-only public demo: auto-login + block writes when DEMO_MODE=true.
+        $middleware->web(append: [
+            \App\Http\Middleware\DemoMode::class,
+        ]);
+        $middleware->prependToPriorityList(
+            before: \Illuminate\Contracts\Auth\Middleware\AuthenticatesRequests::class,
+            prepend: \App\Http\Middleware\DemoMode::class,
+        );
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->shouldRenderJsonWhen(

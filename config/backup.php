@@ -18,4 +18,6 @@ return [
     // survives the client's rotating low-order bits.
     'autofill_ip' => env('DEV_AUTOFILL_IP', ''),
     'autofill_email' => env('DEV_AUTOFILL_EMAIL', ''),
+    // Read-only public demo: auto-login + block every write.
+    'demo' => (bool) env('DEMO_MODE', false),
 ];

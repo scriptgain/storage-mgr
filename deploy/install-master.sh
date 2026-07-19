@@ -91,7 +91,6 @@ log "Migrating + bootstrapping"
 log "Permissions"
 chown -R www-data:www-data "$APP_DIR"
 find "$APP_DIR/storage" "$APP_DIR/bootstrap/cache" -type d -exec chmod 775 {} \;
-[ -f "$APP_DIR/bin/licenseguard" ] && chmod 755 "$APP_DIR/bin/licenseguard"
 
 log "Configuring nginx"
 cat > "/etc/nginx/sites-available/backup.conf" <<NGINX
