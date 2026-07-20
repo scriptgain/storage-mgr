@@ -19,9 +19,10 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  * this server. It maps S3 operations onto the same Bucket/StorageObject models
  * and ObjectStorage backend the web console uses, so both stay consistent.
  *
- * We serve path-style addressing (/{bucket}/{key}). Virtual-host style
- * (bucket.host/key) would need wildcard DNS and a wildcard certificate, so
- * clients should point --endpoint-url here and use path addressing.
+ * Both addressing styles are served: path style (/{bucket}/{key}) and
+ * virtual-host style (bucket.s3.example.com/key, the SDK default), the latter
+ * via a domain-parameter route group so the URI and Host stay exactly as the
+ * client signed them.
  */
 class S3Controller extends Controller
 {
@@ -63,6 +64,17 @@ class S3Controller extends Controller
             return S3Xml::error('InvalidBucketName', null, '/'.$bucket);
         }
 
+        // PutBucketTagging shares the bucket PUT route.
+        if ($request->has('tagging')) {
+            $b = $this->findBucket($request, $bucket);
+            if (! $b instanceof Bucket) {
+                return $b;
+            }
+            $b->forceFill(['tags' => $this->parseTagging($request->getContent())])->save();
+
+            return response('', 204);
+        }
+
         $existing = Bucket::where('name', $bucket)->first();
         if ($existing) {
             return $existing->isVisibleTo($this->user($request))
@@ -98,6 +110,13 @@ class S3Controller extends Controller
         $b = $this->findBucket($request, $bucket);
         if (! $b instanceof Bucket) {
             return $b;
+        }
+
+        // DeleteBucketTagging clears tags rather than removing the bucket.
+        if ($request->has('tagging')) {
+            $b->forceFill(['tags' => null])->save();
+
+            return response('', 204);
         }
 
         if ($b->objects()->exists()) {
@@ -174,9 +193,13 @@ class S3Controller extends Controller
             return $this->listMultipartUploads($b);
         }
 
+        if ($request->has('tagging')) {
+            return S3Xml::response($this->taggingXml($b->tags));
+        }
+
         // Unsupported sub-resources must answer in S3's shape, not with the
         // object listing, or clients misread the response entirely.
-        foreach (['versioning', 'policy', 'acl', 'tagging', 'lifecycle', 'replication', 'encryption', 'notification', 'cors', 'object-lock', 'accelerate', 'logging', 'website', 'requestPayment', 'analytics', 'inventory', 'metrics'] as $sub) {
+        foreach (['versioning', 'policy', 'acl', 'lifecycle', 'replication', 'encryption', 'notification', 'cors', 'object-lock', 'accelerate', 'logging', 'website', 'requestPayment', 'analytics', 'inventory', 'metrics'] as $sub) {
             if ($request->has($sub)) {
                 return $sub === 'versioning'
                     ? S3Xml::response('<?xml version="1.0" encoding="UTF-8"?><VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>')
@@ -272,6 +295,17 @@ class S3Controller extends Controller
             return $this->uploadPart($request, $b, $key);
         }
 
+        // PutObjectTagging shares this route.
+        if ($request->has('tagging')) {
+            $o = $b->objects()->where('key', $key)->first();
+            if (! $o) {
+                return S3Xml::error('NoSuchKey', null, '/'.$bucket.'/'.$key);
+            }
+            $o->forceFill(['tags' => $this->parseTagging($request->getContent())])->save();
+
+            return response('', 200);
+        }
+
         // A copy is a PUT with no body and a source header. Without this branch
         // it looks like an empty upload and silently writes a 0-byte object
         // while the client reports success.
@@ -317,12 +351,13 @@ class S3Controller extends Controller
         rename($tmp, $path);
         @chmod($path, 0664);
 
-        $b->objects()->updateOrCreate(['key' => $key], [
+        $b->objects()->updateOrCreate(['key' => $key], array_filter([
             'size_bytes' => $size,
             'content_type' => $request->header('Content-Type') ?: 'application/octet-stream',
             'etag' => $etag,
+            'tags' => $this->headerTags($request),
             'last_modified' => now(),
-        ]);
+        ], fn ($v) => $v !== null));
         $b->refreshStats();
 
         return response('', 200)->header('ETag', '"'.$etag.'"');
@@ -331,6 +366,15 @@ class S3Controller extends Controller
     /** GET /{bucket}/{key} — GetObject, with Range support */
     public function getObject(Request $request, string $bucket, string $key)
     {
+        // GetObjectTagging shares this route. Clients call it during ordinary
+        // work (the AWS CLI reads tags before a multipart copy), so it must
+        // answer properly rather than fall through to returning the object.
+        if ($request->has('tagging')) {
+            [$b, $o, $err] = $this->findObject($request, $bucket, $key);
+
+            return $err ?: S3Xml::response($this->taggingXml($o->tags));
+        }
+
         // ListParts shares this route, keyed off the uploadId query arg.
         if ($request->query('uploadId')) {
             $b = $this->findBucket($request, $bucket);
@@ -429,6 +473,14 @@ class S3Controller extends Controller
         // AbortMultipartUpload shares this route.
         if ($request->query('uploadId')) {
             return $this->abortMultipartUpload($request, $b, ltrim($key, '/'));
+        }
+
+        // DeleteObjectTagging clears tags, it does not delete the object.
+        if ($request->has('tagging')) {
+            $o = $b->objects()->where('key', ltrim($key, '/'))->first();
+            $o?->forceFill(['tags' => null])->save();
+
+            return response('', 204);
         }
 
         $o = $b->objects()->where('key', ltrim($key, '/'))->first();
@@ -553,7 +605,7 @@ class S3Controller extends Controller
         ]));
     }
 
-    /** PUT /{bucket}/{key}?partNumber=N&uploadId=X — UploadPart */
+    /** PUT /{bucket}/{key}?partNumber=N&uploadId=X — UploadPart (or UploadPartCopy) */
     private function uploadPart(Request $request, Bucket $b, string $key)
     {
         $upload = $this->findUpload($b, $key, (string) $request->query('uploadId'));
@@ -569,6 +621,13 @@ class S3Controller extends Controller
         $dir = $this->storage->multipartDir($upload->upload_id);
         if (! $this->storage->ensureDir($dir)) {
             return S3Xml::error('InternalError', 'Could not stage the upload part.');
+        }
+
+        // UploadPartCopy: the part's bytes come from an existing object rather
+        // than the request body. This is how clients copy objects too large for
+        // a single CopyObject, and it supports an optional byte range.
+        if ($request->header('x-amz-copy-source')) {
+            return $this->uploadPartCopy($request, $upload, $partNumber);
         }
 
         $path = $this->storage->partPath($upload->upload_id, $partNumber);
@@ -595,6 +654,64 @@ class S3Controller extends Controller
         );
 
         return response('', 200)->header('ETag', '"'.$etag.'"');
+    }
+
+    /**
+     * UploadPartCopy — a part sourced from an existing object, optionally a
+     * byte range of it (x-amz-copy-source-range: bytes=0-1048575).
+     */
+    private function uploadPartCopy(Request $request, MultipartUpload $upload, int $partNumber)
+    {
+        $source = rawurldecode((string) $request->header('x-amz-copy-source'));
+        $source = ltrim(strtok($source, '?'), '/');
+        [$srcBucketName, $srcKey] = array_pad(explode('/', $source, 2), 2, '');
+
+        $srcBucket = Bucket::where('name', $srcBucketName)->first();
+        if (! $srcBucket) {
+            return S3Xml::error('NoSuchBucket', null, '/'.$srcBucketName);
+        }
+        if (! $srcBucket->isVisibleTo($this->user($request))) {
+            return S3Xml::error('AccessDenied', null, '/'.$srcBucketName);
+        }
+
+        $srcObject = $srcBucket->objects()->where('key', $srcKey)->first();
+        $srcPath = $srcObject ? $this->storage->pathFor($srcBucket, $srcKey) : null;
+        if (! $srcObject || ! $srcPath || ! is_file($srcPath)) {
+            return S3Xml::error('NoSuchKey', null, '/'.$srcBucketName.'/'.$srcKey);
+        }
+
+        $total = (int) filesize($srcPath);
+        $start = 0;
+        $length = $total;
+
+        if (preg_match('/bytes=(\d+)-(\d*)/', (string) $request->header('x-amz-copy-source-range'), $m)) {
+            $start = (int) $m[1];
+            $end = $m[2] === '' ? $total - 1 : min((int) $m[2], $total - 1);
+            if ($start > $end || $start >= $total) {
+                return S3Xml::error('InvalidArgument', 'The copy source range is not valid.');
+            }
+            $length = $end - $start + 1;
+        }
+
+        $path = $this->storage->partPath($upload->upload_id, $partNumber);
+        $in = fopen($srcPath, 'rb');
+        $out = fopen($path, 'w+b');
+        fseek($in, $start);
+        stream_copy_to_stream($in, $out, $length);
+        fclose($in);
+        fclose($out);
+
+        $etag = md5_file($path) ?: '';
+
+        MultipartPart::updateOrCreate(
+            ['multipart_upload_id' => $upload->id, 'part_number' => $partNumber],
+            ['size_bytes' => (int) filesize($path), 'etag' => $etag]
+        );
+
+        return S3Xml::response(S3Xml::doc('CopyPartResult', [
+            'LastModified' => now()->toIso8601ZuluString(),
+            'ETag' => '"'.$etag.'"',
+        ]));
     }
 
     /**
@@ -773,6 +890,44 @@ class S3Controller extends Controller
     }
 
     // ---------------------------------------------------------------- helpers
+
+    /** Render a tag set as S3's Tagging document (empty set is valid). */
+    private function taggingXml($tags): string
+    {
+        $items = '';
+        foreach ((array) ($tags ?? []) as $k => $v) {
+            $items .= '<Tag><Key>'.S3Xml::esc((string) $k).'</Key><Value>'.S3Xml::esc((string) $v).'</Value></Tag>';
+        }
+
+        return '<?xml version="1.0" encoding="UTF-8"?>'
+            .'<Tagging xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><TagSet>'.$items.'</TagSet></Tagging>';
+    }
+
+    /** Parse a Tagging document into a key => value map. */
+    private function parseTagging(string $xml): array
+    {
+        $tags = [];
+        if (preg_match_all('/<Tag>\s*<Key>(.*?)<\/Key>\s*<Value>(.*?)<\/Value>\s*<\/Tag>/s', $xml, $m, PREG_SET_ORDER)) {
+            foreach ($m as $tag) {
+                $tags[html_entity_decode($tag[1], ENT_XML1 | ENT_QUOTES, 'UTF-8')]
+                    = html_entity_decode($tag[2], ENT_XML1 | ENT_QUOTES, 'UTF-8');
+            }
+        }
+
+        return $tags;
+    }
+
+    /** Tags sent inline with an upload: x-amz-tagging: a=1&b=2 */
+    private function headerTags(Request $request): ?array
+    {
+        $raw = (string) $request->header('x-amz-tagging');
+        if ($raw === '') {
+            return null;
+        }
+        parse_str($raw, $tags);
+
+        return $tags ?: null;
+    }
 
     private function findBucket(Request $request, string $name)
     {

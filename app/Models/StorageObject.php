@@ -11,11 +11,13 @@ class StorageObject extends Model
 
     protected $fillable = [
         'bucket_id', 'key', 'size_bytes', 'content_type', 'etag', 'last_modified',
+        'tags',
     ];
 
     protected function casts(): array
     {
         return [
+            'tags' => 'array',
             'size_bytes' => 'integer',
             'last_modified' => 'datetime',
         ];

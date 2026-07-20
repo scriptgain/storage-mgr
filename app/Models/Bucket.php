@@ -26,11 +26,13 @@ class Bucket extends Model
 
     protected $fillable = [
         'user_id', 'name', 'region', 'access', 'versioning', 'quota_bytes', 'object_count', 'size_bytes',
+        'tags',
     ];
 
     protected function casts(): array
     {
         return [
+            'tags' => 'array',
             'versioning' => 'boolean',
             'quota_bytes' => 'integer',
             'object_count' => 'integer',

@@ -18,6 +18,15 @@ return Application::configure(basePath: dirname(__DIR__))
             // its greedy /{bucket}/{key} patterns cannot shadow the console.
             $domain = config('storage.s3_domain');
 
+            if ($domain) {
+                // Virtual-host style first: bucket.s3.example.com. Registered
+                // ahead of the apex so a bucket subdomain is not swallowed.
+                Illuminate\Support\Facades\Route::group(
+                    ['domain' => '{bucket}.'.$domain],
+                    fn () => require __DIR__.'/../routes/s3-vhost.php'
+                );
+            }
+
             Illuminate\Support\Facades\Route::group(array_filter([
                 'domain' => $domain ?: null,
                 'prefix' => $domain ? null : config('storage.s3_prefix', 's3'),

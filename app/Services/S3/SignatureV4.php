@@ -136,7 +136,9 @@ class SignatureV4
      */
     private function canonicalUri(Request $request): string
     {
-        $path = $request->getPathInfo() ?: '/';
+        // Under virtual-host addressing the bucket is folded into the path
+        // before routing; the client signed the path without it.
+        $path = (string) ($request->attributes->get('s3_signed_path') ?: $request->getPathInfo() ?: '/');
 
         $segments = array_map(
             fn ($s) => str_replace(['+', '%2F', '%7E'], ['%20', '/', '~'], rawurlencode(rawurldecode($s))),
@@ -193,7 +195,7 @@ class SignatureV4
         foreach ($signedHeaders as $name) {
             $name = strtolower(trim($name));
             $value = $name === 'host'
-                ? $request->getHttpHost()
+                ? (string) ($request->attributes->get('s3_signed_host') ?: $request->getHttpHost())
                 : (string) $request->header($name);
 
             $out .= $name.':'.preg_replace('/\s+/', ' ', trim($value))."\n";
