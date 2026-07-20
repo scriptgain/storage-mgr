@@ -13,6 +13,7 @@ use App\Services\S3\ChunkedDecoder;
 use App\Services\S3\ObjectCipher;
 use App\Services\S3\S3Xml;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 /**
@@ -35,6 +36,33 @@ class S3Controller extends Controller
     private function user(Request $request): ?User
     {
         return $request->attributes->get('s3_user');
+    }
+
+    /**
+     * Commit a new object version atomically.
+     *
+     * Concurrent writers to the same key must serialize, or two of them can
+     * each mark their own version "latest", and a reader landing between the
+     * demote and the insert sees no latest version at all. A row lock on the
+     * key inside a transaction makes the demote-then-insert indivisible, so
+     * there is always exactly one latest version.
+     */
+    private function commitVersion(Bucket $b, string $key, string $versionId, bool $versioned, array $values): StorageObject
+    {
+        return DB::transaction(function () use ($b, $key, $versionId, $versioned, $values) {
+            // Take the lock even when unversioned: it still serializes two
+            // clients racing to overwrite the same key.
+            $b->objects()->where('key', $key)->lockForUpdate()->get();
+
+            if ($versioned) {
+                $b->objects()->where('key', $key)->update(['is_latest' => false]);
+            }
+
+            return $b->objects()->updateOrCreate(
+                ['key' => $key, 'version_id' => $versionId],
+                $values
+            );
+        });
     }
 
     // ---------------------------------------------------------------- service
@@ -507,12 +535,7 @@ class S3Controller extends Controller
         }
         @chmod($path, 0664);
 
-        if ($versioned) {
-            $b->objects()->where('key', $key)->update(['is_latest' => false]);
-        }
-
-        $b->objects()->updateOrCreate(
-            ['key' => $key, 'version_id' => $versionId],
+        $this->commitVersion($b, $key, $versionId, $versioned,
             array_filter([
                 'size_bytes' => $size,
                 'content_type' => $request->header('Content-Type') ?: 'application/octet-stream',
@@ -724,10 +747,7 @@ class S3Controller extends Controller
         // rather than destroying data, which is the point of versioning.
         if ($b->versioning) {
             $marker = $this->newVersionId();
-            $b->objects()->where('key', $key)->update(['is_latest' => false]);
-            $b->objects()->create([
-                'key' => $key,
-                'version_id' => $marker,
+            $this->commitVersion($b, $key, $marker, true, [
                 'is_latest' => true,
                 'is_delete_marker' => true,
                 'size_bytes' => 0,
@@ -1091,22 +1111,15 @@ class S3Controller extends Controller
 
         $etag = md5($binaryMd5s).'-'.count($wanted);
 
-        if ($versioned) {
-            $b->objects()->where('key', $key)->update(['is_latest' => false]);
-        }
-
-        $b->objects()->updateOrCreate(
-            ['key' => $key, 'version_id' => $versionId],
-            [
-                'size_bytes' => $total,
-                'content_type' => $upload->content_type,
-                'etag' => $etag,
-                'encrypted' => $encrypted,
-                'is_latest' => true,
-                'is_delete_marker' => false,
-                'last_modified' => now(),
-            ]
-        );
+        $this->commitVersion($b, $key, $versionId, $versioned, [
+            'size_bytes' => $total,
+            'content_type' => $upload->content_type,
+            'etag' => $etag,
+            'encrypted' => $encrypted,
+            'is_latest' => true,
+            'is_delete_marker' => false,
+            'last_modified' => now(),
+        ]);
 
         $this->storage->discardMultipart($upload->upload_id);
         $upload->delete();
