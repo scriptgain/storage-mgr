@@ -1043,15 +1043,21 @@ class S3Controller extends Controller
             $total += (int) $parts[$n]->size_bytes;
         }
 
-        $existing = $b->objects()->where('key', $key)->first();
-        if ($this->storage->wouldExceedQuota($b, $total, $existing)) {
+        // A completed multipart upload is a write like any other, so in a
+        // versioned bucket it must become a NEW version rather than overwrite
+        // the current one.
+        $versioned = (bool) $b->versioning;
+        $versionId = $versioned ? $this->newVersionId() : 'null';
+        $existing = $b->objects()->where('key', $key)->where('is_latest', true)->first();
+
+        if ($this->storage->wouldExceedQuota($b, $total, $versioned ? null : $existing)) {
             $this->storage->discardMultipart($upload->upload_id);
             $upload->delete();
 
             return S3Xml::error('QuotaExceeded', "The bucket \"{$b->name}\" quota would be exceeded.", '/'.$b->name.'/'.$key);
         }
 
-        $final = $this->storage->pathFor($b, $key);
+        $final = $this->storage->pathFor($b, $key, $versionId);
         if (! $this->storage->ensureDir(dirname($final))) {
             return S3Xml::error('InternalError', 'Could not create the destination directory.');
         }
@@ -1073,7 +1079,7 @@ class S3Controller extends Controller
         fclose($out);
 
         if ($this->cipher->enabled()) {
-            $ctx = $this->cipher->context($b->id, $key, $existing?->version_id);
+            $ctx = $this->cipher->context($b->id, $key, $versionId);
             $src = fopen($assembled, 'rb');
             $dst = fopen($final, 'w+b');
             $this->cipher->encryptStream($src, $dst, $ctx);
@@ -1085,37 +1091,35 @@ class S3Controller extends Controller
 
         $etag = md5($binaryMd5s).'-'.count($wanted);
 
-        if ($existing) {
-            // The old bytes were already replaced on disk by the write above,
-            // so only the row needs updating.
-            $existing->fill([
-                'size_bytes' => $total,
-                'content_type' => $upload->content_type,
-                'etag' => $etag,
-                'encrypted' => $encrypted,
-                'last_modified' => now(),
-            ])->save();
-        } else {
-            $b->objects()->create([
-                'key' => $key,
-                'size_bytes' => $total,
-                'content_type' => $upload->content_type,
-                'etag' => $etag,
-                'encrypted' => $encrypted,
-                'last_modified' => now(),
-            ]);
+        if ($versioned) {
+            $b->objects()->where('key', $key)->update(['is_latest' => false]);
         }
+
+        $b->objects()->updateOrCreate(
+            ['key' => $key, 'version_id' => $versionId],
+            [
+                'size_bytes' => $total,
+                'content_type' => $upload->content_type,
+                'etag' => $etag,
+                'encrypted' => $encrypted,
+                'is_latest' => true,
+                'is_delete_marker' => false,
+                'last_modified' => now(),
+            ]
+        );
 
         $this->storage->discardMultipart($upload->upload_id);
         $upload->delete();
         $b->refreshStats();
 
-        return S3Xml::response(S3Xml::doc('CompleteMultipartUploadResult', [
+        $resp = S3Xml::response(S3Xml::doc('CompleteMultipartUploadResult', [
             'Location' => $request->getSchemeAndHttpHost().'/'.$b->name.'/'.$key,
             'Bucket' => $b->name,
             'Key' => $key,
             'ETag' => '"'.$etag.'"',
         ]));
+
+        return $versioned ? $resp->header('x-amz-version-id', $versionId) : $resp;
     }
 
     /** DELETE /{bucket}/{key}?uploadId=X — AbortMultipartUpload */
