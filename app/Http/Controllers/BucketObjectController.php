@@ -36,26 +36,33 @@ class BucketObjectController extends Controller
         $key = $isFolder ? $key . '/' : $key;
 
         $meta = ['size_bytes' => 0, 'content_type' => null, 'etag' => null];
+        // A versioned bucket keeps every write as its own version.
+        $versionId = $bucket->versioning ? (string) (int) (microtime(true) * 1000).bin2hex(random_bytes(4)) : 'null';
 
         if (! $isFolder) {
             $file = $request->file('file');
-            $existing = $bucket->objects()->where('key', $key)->first();
+            $existing = $bucket->objects()->where('key', $key)->where('is_latest', true)->first();
 
             if ($this->storage->wouldExceedQuota($bucket, (int) $file->getSize(), $existing)) {
                 return back()->withInput()->with('warning', "Upload would exceed the quota for bucket \"{$bucket->name}\".");
             }
 
-            // Overwriting a key: drop the old bytes first so nothing is orphaned.
-            if ($existing) {
+            // Overwriting a key in an unversioned bucket discards the old
+            // bytes; a versioned bucket keeps them as the previous version.
+            if ($existing && ! $bucket->versioning) {
                 $this->storage->delete($existing);
             }
 
-            $meta = $this->storage->put($bucket, $key, $file);
+            $meta = $this->storage->put($bucket, $key, $file, $versionId);
+        }
+
+        if ($bucket->versioning) {
+            $bucket->objects()->where('key', $key)->update(['is_latest' => false]);
         }
 
         $object = $bucket->objects()->updateOrCreate(
-            ['key' => $key],
-            $meta + ['last_modified' => now()]
+            ['key' => $key, 'version_id' => $versionId],
+            $meta + ['last_modified' => now(), 'is_latest' => true, 'is_delete_marker' => false]
         );
         $bucket->refreshStats();
         AuditLog::record(
@@ -74,7 +81,7 @@ class BucketObjectController extends Controller
         abort_unless($object->bucket_id === $bucket->id, 404);
         abort_if($object->isFolder(), 404, 'Folders have no contents to download.');
 
-        $path = $this->storage->pathFor($bucket, $object->key);
+        $path = $this->storage->pathForObject($object);
         // Metadata can outlive its bytes (restores, manual cleanup) — say so
         // plainly rather than serving a zero-byte file as if it were the object.
         abort_unless(is_file($path), 410, 'The stored data for this object is no longer available.');

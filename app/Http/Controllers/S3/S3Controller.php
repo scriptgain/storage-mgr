@@ -64,6 +64,18 @@ class S3Controller extends Controller
             return S3Xml::error('InvalidBucketName', null, '/'.$bucket);
         }
 
+        // PutBucketVersioning shares the bucket PUT route.
+        if ($request->has('versioning')) {
+            $b = $this->findBucket($request, $bucket);
+            if (! $b instanceof Bucket) {
+                return $b;
+            }
+            $enabled = str_contains($request->getContent(), '<Status>Enabled</Status>');
+            $b->forceFill(['versioning' => $enabled])->save();
+
+            return response('', 200);
+        }
+
         // PutBucketTagging shares the bucket PUT route.
         if ($request->has('tagging')) {
             $b = $this->findBucket($request, $bucket);
@@ -197,9 +209,22 @@ class S3Controller extends Controller
             return S3Xml::response($this->taggingXml($b->tags));
         }
 
+        if ($request->has('versioning')) {
+            return S3Xml::response(
+                '<?xml version="1.0" encoding="UTF-8"?>'
+                .'<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+                .($b->versioning ? '<Status>Enabled</Status>' : '')
+                .'</VersioningConfiguration>'
+            );
+        }
+
+        if ($request->has('versions')) {
+            return $this->listObjectVersions($request, $b);
+        }
+
         // Unsupported sub-resources must answer in S3's shape, not with the
         // object listing, or clients misread the response entirely.
-        foreach (['versioning', 'policy', 'acl', 'lifecycle', 'replication', 'encryption', 'notification', 'cors', 'object-lock', 'accelerate', 'logging', 'website', 'requestPayment', 'analytics', 'inventory', 'metrics'] as $sub) {
+        foreach (['policy', 'acl', 'lifecycle', 'replication', 'encryption', 'notification', 'cors', 'object-lock', 'accelerate', 'logging', 'website', 'requestPayment', 'analytics', 'inventory', 'metrics'] as $sub) {
             if ($request->has($sub)) {
                 return $sub === 'versioning'
                     ? S3Xml::response('<?xml version="1.0" encoding="UTF-8"?><VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>')
@@ -217,7 +242,7 @@ class S3Controller extends Controller
             $after = (string) base64_decode($token, true);
         }
 
-        $query = $b->objects()->orderBy('key');
+        $query = $b->objects()->current()->orderBy('key');
         if ($prefix !== '') {
             $query->where('key', 'like', str_replace(['%', '_'], ['\%', '\_'], $prefix).'%');
         }
@@ -331,19 +356,23 @@ class S3Controller extends Controller
         fclose($out);
 
         $etag = md5_file($tmp) ?: '';
-        $existing = $b->objects()->where('key', $key)->first();
+        $versioned = (bool) $b->versioning;
+        $existing = $b->objects()->where('key', $key)->where('is_latest', true)->first();
 
-        if ($this->storage->wouldExceedQuota($b, $size, $existing)) {
+        if ($this->storage->wouldExceedQuota($b, $size, $versioned ? null : $existing)) {
             @unlink($tmp);
 
             return S3Xml::error('QuotaExceeded', "The bucket \"{$b->name}\" quota would be exceeded.", '/'.$bucket.'/'.$key);
         }
 
-        if ($existing) {
+        // Versioned: keep the old bytes and demote the previous version.
+        // Unversioned: the write replaces what was there, so reclaim it.
+        $versionId = $versioned ? $this->newVersionId() : 'null';
+        if ($existing && ! $versioned) {
             $this->storage->delete($existing);
         }
 
-        $path = $this->storage->pathFor($b, $key);
+        $path = $this->storage->pathFor($b, $key, $versionId);
         $dir = dirname($path);
         if (! is_dir($dir)) {
             @mkdir($dir, 0775, true);
@@ -351,16 +380,27 @@ class S3Controller extends Controller
         rename($tmp, $path);
         @chmod($path, 0664);
 
-        $b->objects()->updateOrCreate(['key' => $key], array_filter([
-            'size_bytes' => $size,
-            'content_type' => $request->header('Content-Type') ?: 'application/octet-stream',
-            'etag' => $etag,
-            'tags' => $this->headerTags($request),
-            'last_modified' => now(),
-        ], fn ($v) => $v !== null));
+        if ($versioned) {
+            $b->objects()->where('key', $key)->update(['is_latest' => false]);
+        }
+
+        $b->objects()->updateOrCreate(
+            ['key' => $key, 'version_id' => $versionId],
+            array_filter([
+                'size_bytes' => $size,
+                'content_type' => $request->header('Content-Type') ?: 'application/octet-stream',
+                'etag' => $etag,
+                'tags' => $this->headerTags($request),
+                'is_latest' => true,
+                'is_delete_marker' => false,
+                'last_modified' => now(),
+            ], fn ($v) => $v !== null)
+        );
         $b->refreshStats();
 
-        return response('', 200)->header('ETag', '"'.$etag.'"');
+        $resp = response('', 200)->header('ETag', '"'.$etag.'"');
+
+        return $versioned ? $resp->header('x-amz-version-id', $versionId) : $resp;
     }
 
     /** GET /{bucket}/{key} — GetObject, with Range support */
@@ -389,7 +429,7 @@ class S3Controller extends Controller
             return $err;
         }
 
-        $path = $this->storage->pathFor($b, $o->key);
+        $path = $this->storage->pathForObject($o);
         if (! is_file($path)) {
             return S3Xml::error('NoSuchKey', 'The stored data for this object is no longer available.', '/'.$bucket.'/'.$key);
         }
@@ -483,7 +523,48 @@ class S3Controller extends Controller
             return response('', 204);
         }
 
-        $o = $b->objects()->where('key', ltrim($key, '/'))->first();
+        $key = ltrim($key, '/');
+        $versionId = (string) $request->query('versionId', '');
+
+        // An explicit version is removed for good, including its bytes.
+        if ($versionId !== '') {
+            $o = $b->objects()->where('key', $key)->where('version_id', $versionId)->first();
+            if ($o) {
+                $wasLatest = (bool) $o->is_latest;
+                $this->storage->delete($o);
+                $o->delete();
+                if ($wasLatest) {
+                    // Promote whatever version is now newest.
+                    $b->objects()->where('key', $key)->latest('id')->first()
+                        ?->forceFill(['is_latest' => true])->save();
+                }
+                $b->refreshStats();
+            }
+
+            return response('', 204)->header('x-amz-version-id', $versionId);
+        }
+
+        // Versioned bucket: a plain delete hides the key behind a delete marker
+        // rather than destroying data, which is the point of versioning.
+        if ($b->versioning) {
+            $marker = $this->newVersionId();
+            $b->objects()->where('key', $key)->update(['is_latest' => false]);
+            $b->objects()->create([
+                'key' => $key,
+                'version_id' => $marker,
+                'is_latest' => true,
+                'is_delete_marker' => true,
+                'size_bytes' => 0,
+                'last_modified' => now(),
+            ]);
+            $b->refreshStats();
+
+            return response('', 204)
+                ->header('x-amz-delete-marker', 'true')
+                ->header('x-amz-version-id', $marker);
+        }
+
+        $o = $b->objects()->where('key', $key)->first();
         if ($o) {
             $this->storage->delete($o);
             $o->delete();
@@ -518,12 +599,12 @@ class S3Controller extends Controller
             return S3Xml::error('AccessDenied', null, '/'.$srcBucketName);
         }
 
-        $srcObject = $srcBucket->objects()->where('key', $srcKey)->first();
+        $srcObject = $srcBucket->objects()->where('key', $srcKey)->current()->first();
         if (! $srcObject) {
             return S3Xml::error('NoSuchKey', null, '/'.$srcBucketName.'/'.$srcKey);
         }
 
-        $srcPath = $this->storage->pathFor($srcBucket, $srcKey);
+        $srcPath = $this->storage->pathForObject($srcObject);
         if (! is_file($srcPath)) {
             return S3Xml::error('NoSuchKey', 'The stored data for the source object is no longer available.', '/'.$srcBucketName.'/'.$srcKey);
         }
@@ -674,8 +755,8 @@ class S3Controller extends Controller
             return S3Xml::error('AccessDenied', null, '/'.$srcBucketName);
         }
 
-        $srcObject = $srcBucket->objects()->where('key', $srcKey)->first();
-        $srcPath = $srcObject ? $this->storage->pathFor($srcBucket, $srcKey) : null;
+        $srcObject = $srcBucket->objects()->where('key', $srcKey)->current()->first();
+        $srcPath = $srcObject ? $this->storage->pathForObject($srcObject) : null;
         if (! $srcObject || ! $srcPath || ! is_file($srcPath)) {
             return S3Xml::error('NoSuchKey', null, '/'.$srcBucketName.'/'.$srcKey);
         }
@@ -891,6 +972,49 @@ class S3Controller extends Controller
 
     // ---------------------------------------------------------------- helpers
 
+    /**
+     * GET /{bucket}?versions — ListObjectVersions.
+     *
+     * Every version of every key, with delete markers reported separately so
+     * clients can distinguish "hidden" from "never existed".
+     */
+    private function listObjectVersions(Request $request, Bucket $b)
+    {
+        $prefix = (string) $request->query('prefix', '');
+        $maxKeys = max(1, min(1000, (int) $request->query('max-keys', 1000)));
+
+        $query = $b->objects()->orderBy('key')->orderByDesc('id');
+        if ($prefix !== '') {
+            $query->where('key', 'like', str_replace(['%', '_'], ['\%', '\_'], $prefix).'%');
+        }
+
+        $body = '';
+        foreach ($query->limit($maxKeys)->get() as $o) {
+            $common = '<Key>'.S3Xml::esc($o->key).'</Key>'
+                .'<VersionId>'.S3Xml::esc((string) $o->version_id).'</VersionId>'
+                .'<IsLatest>'.($o->is_latest ? 'true' : 'false').'</IsLatest>'
+                .'<LastModified>'.($o->last_modified ?? $o->updated_at)->toIso8601ZuluString().'</LastModified>';
+
+            $body .= $o->is_delete_marker
+                ? '<DeleteMarker>'.$common.'</DeleteMarker>'
+                : '<Version>'.$common
+                    .'<ETag>&quot;'.S3Xml::esc((string) $o->etag).'&quot;</ETag>'
+                    .'<Size>'.(int) $o->size_bytes.'</Size>'
+                    .'<StorageClass>STANDARD</StorageClass></Version>';
+        }
+
+        return S3Xml::response(
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            .'<ListVersionsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+            .'<Name>'.S3Xml::esc($b->name).'</Name>'
+            .'<Prefix>'.S3Xml::esc($prefix).'</Prefix>'
+            .'<MaxKeys>'.$maxKeys.'</MaxKeys>'
+            .'<IsTruncated>false</IsTruncated>'
+            .$body
+            .'</ListVersionsResult>'
+        );
+    }
+
     /** Render a tag set as S3's Tagging document (empty set is valid). */
     private function taggingXml($tags): string
     {
@@ -950,11 +1074,30 @@ class S3Controller extends Controller
             return [null, null, $b];
         }
 
-        $o = $b->objects()->where('key', ltrim($key, '/'))->first();
+        $key = ltrim($key, '/');
+        $versionId = (string) $request->query('versionId', '');
+
+        $o = $versionId !== ''
+            ? $b->objects()->where('key', $key)->where('version_id', $versionId)->first()
+            : $b->objects()->where('key', $key)->where('is_latest', true)->first();
+
         if (! $o) {
             return [$b, null, S3Xml::error('NoSuchKey', null, '/'.$bucket.'/'.$key)];
         }
 
+        // A key whose newest version is a delete marker reads as absent, and S3
+        // signals that specifically so clients can tell it apart.
+        if ($o->is_delete_marker && $versionId === '') {
+            return [$b, null, S3Xml::error('NoSuchKey', null, '/'.$bucket.'/'.$key)
+                ->header('x-amz-delete-marker', 'true')];
+        }
+
         return [$b, $o, null];
+    }
+
+    /** S3 version ids are opaque; ours sort lexicographically by creation. */
+    private function newVersionId(): string
+    {
+        return str_pad((string) (int) (microtime(true) * 1000), 14, '0', STR_PAD_LEFT).bin2hex(random_bytes(6));
     }
 }

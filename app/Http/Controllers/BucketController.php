@@ -45,7 +45,9 @@ class BucketController extends Controller
     public function show(Bucket $bucket)
     {
         $this->guard($bucket);
-        $objects = $bucket->objects()->orderBy('key')->paginate(50)->withQueryString();
+        // Show live objects only: old versions and delete markers are not what a
+        // user browsing a bucket expects to see.
+        $objects = $bucket->objects()->current()->orderBy('key')->paginate(50)->withQueryString();
 
         return view('buckets.show', compact('bucket', 'objects'));
     }

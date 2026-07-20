@@ -38,22 +38,32 @@ class ObjectStorage
      * path so that "../../etc/passwd", deep nesting, and exotic characters are
      * all inert; the human-readable key stays in the database.
      */
-    public function pathFor(Bucket $bucket, string $key): string
+    public function pathFor(Bucket $bucket, string $key, ?string $versionId = null): string
     {
-        $hash = hash('sha256', $key);
+        // Version "null" is S3's own name for an object written while
+        // versioning was off. Hashing the bare key for that case keeps every
+        // pre-versioning object exactly where it already lives on disk.
+        $seed = ($versionId === null || $versionId === 'null') ? $key : $key.'#'.$versionId;
+        $hash = hash('sha256', $seed);
 
         return $this->bucketDir($bucket).'/'.substr($hash, 0, 2).'/'.substr($hash, 2, 2).'/'.$hash;
     }
 
     public function exists(StorageObject $object): bool
     {
-        return ! $object->isFolder() && is_file($this->pathFor($object->bucket, $object->key));
+        return ! $object->isFolder() && is_file($this->pathForObject($object));
+    }
+
+    /** Path for a stored object, honouring its version. */
+    public function pathForObject(StorageObject $object): string
+    {
+        return $this->pathFor($object->bucket, $object->key, $object->version_id);
     }
 
     /** Bytes currently on disk for an object, or null when the file is gone. */
     public function sizeOnDisk(StorageObject $object): ?int
     {
-        $path = $this->pathFor($object->bucket, $object->key);
+        $path = $this->pathForObject($object);
         if (! is_file($path)) {
             return null;
         }
@@ -67,9 +77,9 @@ class ObjectStorage
      *
      * @return array{size_bytes:int, content_type:string, etag:string}
      */
-    public function put(Bucket $bucket, string $key, UploadedFile $file): array
+    public function put(Bucket $bucket, string $key, UploadedFile $file, ?string $versionId = null): array
     {
-        $path = $this->pathFor($bucket, $key);
+        $path = $this->pathFor($bucket, $key, $versionId);
         $dir = dirname($path);
 
         if (! is_dir($dir) && ! @mkdir($dir, 0775, true) && ! is_dir($dir)) {
@@ -134,7 +144,7 @@ class ObjectStorage
             return;
         }
 
-        $path = $this->pathFor($object->bucket, $object->key);
+        $path = $this->pathForObject($object);
         if (is_file($path)) {
             @unlink($path);
             $this->pruneEmptyDirs(dirname($path), $this->bucketDir($object->bucket));

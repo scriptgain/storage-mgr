@@ -11,13 +11,15 @@ class StorageObject extends Model
 
     protected $fillable = [
         'bucket_id', 'key', 'size_bytes', 'content_type', 'etag', 'last_modified',
-        'tags',
+        'tags', 'version_id', 'is_latest', 'is_delete_marker',
     ];
 
     protected function casts(): array
     {
         return [
             'tags' => 'array',
+            'is_latest' => 'boolean',
+            'is_delete_marker' => 'boolean',
             'size_bytes' => 'integer',
             'last_modified' => 'datetime',
         ];
@@ -44,6 +46,15 @@ class StorageObject extends Model
     }
 
     /** Is this a "folder" placeholder (key ends with a trailing slash)? */
+    /**
+     * Only the live objects: the current version of each key, excluding keys
+     * whose newest version is a delete marker (those read as absent).
+     */
+    public function scopeCurrent($query)
+    {
+        return $query->where('is_latest', true)->where('is_delete_marker', false);
+    }
+
     public function isFolder(): bool
     {
         return str_ends_with($this->key, '/');

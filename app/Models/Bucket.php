@@ -105,8 +105,10 @@ class Bucket extends Model
     /** Recompute object_count/size_bytes from the objects table. Call after any object mutation. */
     public function refreshStats(): void
     {
-        $this->object_count = $this->objects()->count();
-        $this->size_bytes = (int) $this->objects()->sum('size_bytes');
+        // Only live objects count: old versions and delete markers are not
+        // what a user means by "what is in this bucket".
+        $this->object_count = $this->objects()->current()->count();
+        $this->size_bytes = (int) $this->objects()->current()->sum('size_bytes');
         $this->saveQuietly();
     }
 }

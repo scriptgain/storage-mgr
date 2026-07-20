@@ -83,7 +83,7 @@ class StorageObjectController extends Controller
         abort_unless($storageObject->isVisibleTo(auth()->user()), 403);
         abort_if($storageObject->isFolder(), 404, 'Folders have no contents to download.');
 
-        $path = $this->storage->pathFor($storageObject->bucket, $storageObject->key);
+        $path = $this->storage->pathForObject($storageObject);
         abort_unless(is_file($path), 410, 'The stored data for this object is no longer available.');
 
         return response()->download($path, $storageObject->baseName(), [
