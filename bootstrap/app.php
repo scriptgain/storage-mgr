@@ -11,6 +11,18 @@ return Application::configure(basePath: dirname(__DIR__))
         api: __DIR__.'/../routes/api.php',
         commands: __DIR__.'/../routes/console.php',
         health: '/up',
+        then: function (): void {
+            // S3 protocol endpoint. Given a dedicated hostname it is served at
+            // the root (a true drop-in endpoint); otherwise under /s3, which
+            // SDKs accept as --endpoint-url https://host/s3. Registered last so
+            // its greedy /{bucket}/{key} patterns cannot shadow the console.
+            $domain = config('storage.s3_domain');
+
+            Illuminate\Support\Facades\Route::group(array_filter([
+                'domain' => $domain ?: null,
+                'prefix' => $domain ? null : config('storage.s3_prefix', 's3'),
+            ]), fn () => require __DIR__.'/../routes/s3.php');
+        },
     )
     ->withMiddleware(function (Middleware $middleware): void {
         // Behind CloudPanel's local front nginx: trust ONLY the loopback proxy so
@@ -24,6 +36,7 @@ return Application::configure(basePath: dirname(__DIR__))
             'firewall' => \App\Http\Middleware\FirewallGuard::class,
             'license.offline' => \App\Http\Middleware\EnforceLicense::class,
             'setup' => \App\Http\Middleware\EnsureSetup::class,
+            's3.auth' => \App\Http\Middleware\AuthenticateS3::class,
         ]);
 
         // Perimeter guard on every web request: IP bans + optional allowlist,

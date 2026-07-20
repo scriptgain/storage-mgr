@@ -21,4 +21,23 @@ return [
     */
     'max_upload_kb' => (int) env('STORAGE_MAX_UPLOAD_KB', 5 * 1024 * 1024),
 
+    /*
+    |--------------------------------------------------------------------------
+    | S3 protocol endpoint
+    |--------------------------------------------------------------------------
+    |
+    | Set a dedicated hostname to serve S3 at its root, which is what SDKs
+    | expect from a drop-in endpoint:
+    |
+    |     STORAGE_S3_DOMAIN=s3.example.com
+    |
+    | Leave it empty and S3 is served under the prefix below on the console's
+    | own host, reachable with --endpoint-url https://console-host/s3
+    |
+    */
+
+    's3_domain' => env('STORAGE_S3_DOMAIN'),
+
+    's3_prefix' => env('STORAGE_S3_PREFIX', 's3'),
+
 ];
