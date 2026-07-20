@@ -24,6 +24,8 @@ use Illuminate\Support\Facades\Route;
 Route::middleware('s3.auth')->group(function () {
     Route::get('/', [S3Controller::class, 'listBuckets']);
 
+    // Bulk delete (?delete) is a POST on the bucket itself.
+    Route::post('/{bucket}', [S3Controller::class, 'deleteObjects'])->where('bucket', '[^/]+');
     Route::put('/{bucket}', [S3Controller::class, 'createBucket'])->where('bucket', '[^/]+');
     Route::get('/{bucket}', [S3Controller::class, 'listObjects'])->where('bucket', '[^/]+');
     Route::match(['head'], '/{bucket}', [S3Controller::class, 'headBucket'])->where('bucket', '[^/]+');

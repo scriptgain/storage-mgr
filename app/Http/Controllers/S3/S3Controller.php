@@ -109,6 +109,48 @@ class S3Controller extends Controller
         return response('', 204);
     }
 
+    /**
+     * POST /{bucket}?delete — DeleteObjects.
+     *
+     * The bulk delete every client uses for recursive removal ("mc rm -r",
+     * "aws s3 rm --recursive"). Without it those commands fail, and the bucket
+     * can never be emptied enough to drop.
+     */
+    public function deleteObjects(Request $request, string $bucket)
+    {
+        $b = $this->findBucket($request, $bucket);
+        if (! $b instanceof Bucket) {
+            return $b;
+        }
+
+        if (! $request->has('delete')) {
+            return S3Xml::error('NotImplemented', null, '/'.$bucket);
+        }
+
+        preg_match_all('/<Key>(.*?)<\/Key>/s', $request->getContent(), $m);
+        $keys = array_map(fn ($k) => html_entity_decode($k, ENT_XML1 | ENT_QUOTES, 'UTF-8'), $m[1] ?? []);
+        $quiet = str_contains($request->getContent(), '<Quiet>true</Quiet>');
+
+        $deleted = '';
+        foreach ($keys as $key) {
+            $o = $b->objects()->where('key', $key)->first();
+            if ($o) {
+                $this->storage->delete($o);
+                $o->delete();
+            }
+            // S3 reports success even for keys that were already absent.
+            if (! $quiet) {
+                $deleted .= '<Deleted><Key>'.S3Xml::esc($key).'</Key></Deleted>';
+            }
+        }
+        $b->refreshStats();
+
+        return S3Xml::response(
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            .'<DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'.$deleted.'</DeleteResult>'
+        );
+    }
+
     /** GET /{bucket} — ListObjectsV2 (and the V1 shape, which shares these fields) */
     public function listObjects(Request $request, string $bucket)
     {
