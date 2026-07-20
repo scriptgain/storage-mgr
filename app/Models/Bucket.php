@@ -14,6 +14,16 @@ class Bucket extends Model
         'public' => 'Public',
     ];
 
+    protected static function booted(): void
+    {
+        // Reclaim the bucket's bytes whenever it is deleted, so disk usage can
+        // never outlive the record. Note this fires for model deletes only —
+        // mass deletes on the query builder must call ObjectStorage directly.
+        static::deleting(function (Bucket $bucket) {
+            app(\App\Services\ObjectStorage::class)->deleteBucket($bucket);
+        });
+    }
+
     protected $fillable = [
         'user_id', 'name', 'region', 'access', 'versioning', 'quota_bytes', 'object_count', 'size_bytes',
     ];

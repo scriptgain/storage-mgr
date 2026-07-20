@@ -100,7 +100,13 @@ class BucketController extends Controller
             return back()->with('warning', 'No matching buckets were selected.');
         }
 
-        $count = Bucket::whereIn('id', $ids->all())->delete();
+        // Delete as models, not via the query builder: a mass delete skips the
+        // deleting event and would strand every one of these buckets' bytes.
+        $count = 0;
+        foreach (Bucket::whereIn('id', $ids->all())->get() as $b) {
+            $b->delete();
+            $count++;
+        }
 
         AuditLog::record('deleted', "Bulk deleted {$count} bucket".($count === 1 ? '' : 's').'.');
 

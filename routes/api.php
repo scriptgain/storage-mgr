@@ -16,6 +16,7 @@ Route::prefix('v1')->name('api.')->middleware('api.token')->group(function () {
 
     // Storage (owner-scoped; objects inherit their bucket's owner).
     Route::apiResource('buckets', BucketController::class);
+    Route::get('objects/{storageObject}/content', [StorageObjectController::class, 'content'])->name('objects.content');
     Route::apiResource('objects', StorageObjectController::class)->only(['index', 'show', 'store', 'destroy'])->parameters(['objects' => 'storageObject']);
     Route::apiResource('access-keys', AccessKeyController::class)->only(['index', 'store', 'show', 'destroy'])->parameters(['access-keys' => 'accessKey']);
     Route::post('access-keys/{accessKey}/status', [AccessKeyController::class, 'setStatus'])->name('access-keys.status');

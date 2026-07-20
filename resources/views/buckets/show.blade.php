@@ -14,7 +14,8 @@
         <div class="lg:col-span-2 space-y-6">
             {{-- Upload / new folder --}}
             <x-card title="Add To Bucket">
-                <form method="POST" action="{{ route('buckets.objects.store', $bucket) }}" class="space-y-4" x-data="{ isFolder: false }">
+                <form method="POST" action="{{ route('buckets.objects.store', $bucket) }}" class="space-y-4" enctype="multipart/form-data"
+                    x-data="{ isFolder: false, fileName: '' }">
                     @csrf
                     <input type="hidden" name="is_folder" :value="isFolder ? 1 : 0">
                     <div class="flex items-center gap-3">
@@ -29,17 +30,20 @@
                             <span class="inline-flex items-center gap-1.5"><x-icon name="folder" class="w-4 h-4" /> New Folder</span>
                         </button>
                     </div>
-                    <x-field label="Key" for="key" required :hint="'Path within the bucket, e.g. images/logo.png'" :error="$errors->first('key')">
-                        <x-input id="key" name="key" required :value="old('key')" placeholder="folder/file.txt" />
-                    </x-field>
-                    <div x-show="!isFolder" x-cloak class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                        <x-field label="Content Type" for="content_type" :error="$errors->first('content_type')">
-                            <x-input id="content_type" name="content_type" :value="old('content_type')" placeholder="text/plain" />
-                        </x-field>
-                        <x-field label="Size (bytes)" for="size_bytes" :error="$errors->first('size_bytes')">
-                            <x-input id="size_bytes" name="size_bytes" type="number" min="0" :value="old('size_bytes')" placeholder="0" />
+                    {{-- Choosing a file pre-fills the key, so the common case is one click. --}}
+                    <div x-show="!isFolder" x-cloak>
+                        <x-field label="File" for="file" required :error="$errors->first('file')">
+                            <input id="file" name="file" type="file"
+                                @change="fileName = $event.target.files[0]?.name || '';
+                                         if (fileName && !$refs.key.value) $refs.key.value = fileName;"
+                                class="block w-full text-sm text-slate-600 rounded-lg ring-1 ring-inset ring-slate-200
+                                       file:mr-3 file:py-2 file:px-3 file:rounded-l-lg file:border-0
+                                       file:bg-brand-50 file:text-brand-700 file:font-medium hover:file:bg-brand-100" />
                         </x-field>
                     </div>
+                    <x-field label="Key" for="key" required :hint="'Path within the bucket, e.g. images/logo.png'" :error="$errors->first('key')">
+                        <x-input id="key" name="key" required :value="old('key')" placeholder="folder/file.txt" x-ref="key" />
+                    </x-field>
                     <div class="flex justify-end">
                         <x-button type="submit" icon="plus">Add</x-button>
                     </div>
@@ -127,6 +131,13 @@
                                         <td class="tabular text-slate-500">{{ \App\Support\Bytes::human($o->size_bytes) }}</td>
                                         <td class="text-slate-500">{{ optional($o->last_modified)->diffForHumans() ?? '—' }}</td>
                                         <td class="text-right">
+                                            @unless ($o->isFolder())
+                                                <a href="{{ route('buckets.objects.download', [$bucket, $o]) }}"
+                                                    class="inline-flex items-center gap-1.5 text-sm font-medium text-brand-700 hover:text-brand-800 mr-3"
+                                                    title="Download {{ $o->baseName() }}">
+                                                    <x-icon name="arrow-down" class="w-4 h-4" /> Download
+                                                </a>
+                                            @endunless
                                             <x-delete-button :name="'del-obj-' . $o->id" :action="route('buckets.objects.destroy', [$bucket, $o])"
                                                 title="Delete Object?" :message="'\'' . $o->key . '\' will be permanently removed.'" />
                                         </td>

@@ -56,6 +56,7 @@ Route::middleware(['auth', 'security.policy'])->group(function () {
     Route::delete('buckets/bulk', [BucketController::class, 'bulkDestroy'])->name('buckets.bulk-destroy');
     Route::resource('buckets', BucketController::class);
     Route::post('buckets/{bucket}/objects', [BucketObjectController::class, 'store'])->name('buckets.objects.store');
+    Route::get('buckets/{bucket}/objects/{object}/download', [BucketObjectController::class, 'download'])->name('buckets.objects.download');
     Route::delete('buckets/{bucket}/objects/bulk', [BucketObjectController::class, 'bulkDestroy'])->name('buckets.objects.bulk-destroy');
     Route::delete('buckets/{bucket}/objects/{object}', [BucketObjectController::class, 'destroy'])->name('buckets.objects.destroy');
 
