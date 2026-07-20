@@ -42,6 +42,24 @@ return [
     |
     */
 
+    /*
+    |--------------------------------------------------------------------------
+    | Server-side encryption at rest
+    |--------------------------------------------------------------------------
+    |
+    | Encrypts object data on disk with AES-256 and a per-object key derived
+    | from the master key below. Set a dedicated key so that the object store
+    | and the key are not compromised together; it falls back to APP_KEY.
+    |
+    | Objects record whether they were encrypted, so turning this on affects new
+    | writes only and never strands data already stored.
+    |
+    */
+
+    'encryption' => (bool) env('STORAGE_ENCRYPTION', false),
+
+    'encryption_key' => env('STORAGE_ENCRYPTION_KEY'),
+
     's3_domain' => env('STORAGE_S3_DOMAIN'),
 
     's3_prefix' => env('STORAGE_S3_PREFIX', 's3'),

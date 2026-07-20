@@ -6,12 +6,16 @@ use App\Http\Controllers\Controller;
 use App\Models\Bucket;
 use App\Models\StorageObject;
 use App\Services\ObjectStorage;
+use App\Services\S3\ObjectCipher;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 
 class StorageObjectController extends Controller
 {
-    public function __construct(private readonly ObjectStorage $storage) {}
+    public function __construct(
+        private readonly ObjectStorage $storage,
+        private readonly ObjectCipher $cipher,
+    ) {}
 
     public function index(Request $request)
     {
@@ -85,6 +89,17 @@ class StorageObjectController extends Controller
 
         $path = $this->storage->pathForObject($storageObject);
         abort_unless(is_file($path), 410, 'The stored data for this object is no longer available.');
+
+        if ($storageObject->encrypted) {
+            $ctx = $this->cipher->context($storageObject->bucket_id, $storageObject->key, $storageObject->version_id);
+            $cipher = $this->cipher;
+
+            return response()->streamDownload(function () use ($path, $ctx, $cipher) {
+                $fh = fopen($path, 'rb');
+                $cipher->decryptStream($fh, null, $ctx);
+                fclose($fh);
+            }, $storageObject->baseName(), ['Content-Type' => $storageObject->content_type ?: 'application/octet-stream']);
+        }
 
         return response()->download($path, $storageObject->baseName(), [
             'Content-Type' => $storageObject->content_type ?: 'application/octet-stream',

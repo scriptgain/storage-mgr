@@ -6,6 +6,7 @@ use App\Models\AuditLog;
 use App\Models\Bucket;
 use App\Models\StorageObject;
 use App\Services\ObjectStorage;
+use App\Services\S3\ObjectCipher;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 
@@ -18,7 +19,10 @@ use Illuminate\Support\Str;
  */
 class BucketObjectController extends Controller
 {
-    public function __construct(private readonly ObjectStorage $storage) {}
+    public function __construct(
+        private readonly ObjectStorage $storage,
+        private readonly ObjectCipher $cipher,
+    ) {}
 
     public function store(Request $request, Bucket $bucket)
     {
@@ -85,6 +89,19 @@ class BucketObjectController extends Controller
         // Metadata can outlive its bytes (restores, manual cleanup) — say so
         // plainly rather than serving a zero-byte file as if it were the object.
         abort_unless(is_file($path), 410, 'The stored data for this object is no longer available.');
+
+        // Encrypted objects must be decrypted on the way out, or the browser
+        // saves ciphertext under the original filename.
+        if ($object->encrypted) {
+            $ctx = $this->cipher->context($object->bucket_id, $object->key, $object->version_id);
+            $cipher = $this->cipher;
+
+            return response()->streamDownload(function () use ($path, $ctx, $cipher) {
+                $fh = fopen($path, 'rb');
+                $cipher->decryptStream($fh, null, $ctx);
+                fclose($fh);
+            }, $object->baseName(), ['Content-Type' => $object->content_type ?: 'application/octet-stream']);
+        }
 
         return response()->download($path, $object->baseName(), [
             'Content-Type' => $object->content_type ?: 'application/octet-stream',

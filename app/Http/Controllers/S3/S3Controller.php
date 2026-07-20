@@ -10,6 +10,7 @@ use App\Models\StorageObject;
 use App\Models\User;
 use App\Services\ObjectStorage;
 use App\Services\S3\ChunkedDecoder;
+use App\Services\S3\ObjectCipher;
 use App\Services\S3\S3Xml;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\StreamedResponse;
@@ -26,7 +27,10 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  */
 class S3Controller extends Controller
 {
-    public function __construct(private readonly ObjectStorage $storage) {}
+    public function __construct(
+        private readonly ObjectStorage $storage,
+        private readonly ObjectCipher $cipher,
+    ) {}
 
     private function user(Request $request): ?User
     {
@@ -485,7 +489,22 @@ class S3Controller extends Controller
         if (! is_dir($dir)) {
             @mkdir($dir, 0775, true);
         }
-        rename($tmp, $path);
+        // Encrypt on the way to disk. The etag stays the MD5 of the PLAINTEXT,
+        // which is what clients compare against; hashing ciphertext would make
+        // every integrity check fail.
+        $encrypted = false;
+        if ($this->cipher->enabled()) {
+            $ctx = $this->cipher->context($b->id, $key, $versionId);
+            $src = fopen($tmp, 'rb');
+            $dst = fopen($path, 'w+b');
+            $this->cipher->encryptStream($src, $dst, $ctx);
+            fclose($src);
+            fclose($dst);
+            @unlink($tmp);
+            $encrypted = true;
+        } else {
+            rename($tmp, $path);
+        }
         @chmod($path, 0664);
 
         if ($versioned) {
@@ -501,12 +520,16 @@ class S3Controller extends Controller
                 'tags' => $this->headerTags($request),
                 'is_latest' => true,
                 'is_delete_marker' => false,
+                'encrypted' => $encrypted,
                 'last_modified' => now(),
             ], fn ($v) => $v !== null) + $this->lockOnUpload($request, $b)
         );
         $b->refreshStats();
 
         $resp = response('', 200)->header('ETag', '"'.$etag.'"');
+        if ($encrypted) {
+            $resp->header('x-amz-server-side-encryption', 'AES256');
+        }
 
         return $versioned ? $resp->header('x-amz-version-id', $versionId) : $resp;
     }
@@ -565,7 +588,7 @@ class S3Controller extends Controller
             return S3Xml::error('NoSuchKey', 'The stored data for this object is no longer available.', '/'.$bucket.'/'.$key);
         }
 
-        $size = (int) filesize($path);
+        $size = $o->encrypted ? (int) $o->size_bytes : (int) filesize($path);
         $headers = [
             'Content-Type' => $o->content_type ?: 'application/octet-stream',
             'ETag' => '"'.$o->etag.'"',
@@ -598,6 +621,20 @@ class S3Controller extends Controller
 
         $length = $end - $start + 1;
         $headers['Content-Length'] = (string) $length;
+
+        if ($o->encrypted) {
+            $headers['x-amz-server-side-encryption'] = 'AES256';
+            $ctx = $this->cipher->context($b->id, $o->key, $o->version_id);
+            $cipher = $this->cipher;
+
+            return new StreamedResponse(function () use ($path, $start, $length, $partial, $ctx, $cipher) {
+                $fh = fopen($path, 'rb');
+                $partial
+                    ? $cipher->decryptRangeStream($fh, $ctx, $start, $length)
+                    : $cipher->decryptStream($fh, null, $ctx);
+                fclose($fh);
+            }, $partial ? 206 : 200, $headers);
+        }
 
         return new StreamedResponse(function () use ($path, $start, $length) {
             $fh = fopen($path, 'rb');
@@ -758,19 +795,51 @@ class S3Controller extends Controller
         // Copying a key onto itself is a metadata-only operation in S3; doing
         // the file copy would truncate the source before reading it.
         $destPath = $this->storage->pathFor($dest, $key);
+        $destEncrypted = (bool) $srcObject->encrypted;
+
         if ($srcPath !== $destPath) {
             if (! $this->storage->ensureDir(dirname($destPath))) {
                 return S3Xml::error('InternalError', 'Could not create the destination directory.');
             }
-            if (! @copy($srcPath, $destPath)) {
+
+            // Encryption keys are derived per object, so raw-copying ciphertext
+            // would produce a file the destination's key cannot decrypt. Round
+            // it through plaintext instead.
+            if ($srcObject->encrypted || $this->cipher->enabled()) {
+                $srcCtx = $this->cipher->context($srcBucket->id, $srcKey, $srcObject->version_id);
+                $dstCtx = $this->cipher->context($dest->id, $key, null);
+
+                $plain = tempnam(sys_get_temp_dir(), 's3cp');
+                $in = fopen($srcPath, 'rb');
+                $mid = fopen($plain, 'w+b');
+                $srcObject->encrypted
+                    ? $this->cipher->decryptStream($in, $mid, $srcCtx)
+                    : stream_copy_to_stream($in, $mid);
+                fclose($in);
+                fclose($mid);
+
+                $mid = fopen($plain, 'rb');
+                $out = fopen($destPath, 'w+b');
+                if ($this->cipher->enabled()) {
+                    $this->cipher->encryptStream($mid, $out, $dstCtx);
+                    $destEncrypted = true;
+                } else {
+                    stream_copy_to_stream($mid, $out);
+                    $destEncrypted = false;
+                }
+                fclose($mid);
+                fclose($out);
+                @unlink($plain);
+            } elseif (! @copy($srcPath, $destPath)) {
                 return S3Xml::error('InternalError', 'Could not copy the object data.');
             }
         }
 
         $object = $dest->objects()->updateOrCreate(['key' => $key], [
-            'size_bytes' => $size,
+            'size_bytes' => $srcObject->size_bytes,
             'content_type' => $srcObject->content_type,
             'etag' => $srcObject->etag,
+            'encrypted' => $destEncrypted,
             'last_modified' => now(),
         ]);
         $dest->refreshStats();
@@ -900,7 +969,7 @@ class S3Controller extends Controller
             return S3Xml::error('NoSuchKey', null, '/'.$srcBucketName.'/'.$srcKey);
         }
 
-        $total = (int) filesize($srcPath);
+        $total = $srcObject->encrypted ? (int) $srcObject->size_bytes : (int) filesize($srcPath);
         $start = 0;
         $length = $total;
 
@@ -916,8 +985,18 @@ class S3Controller extends Controller
         $path = $this->storage->partPath($upload->upload_id, $partNumber);
         $in = fopen($srcPath, 'rb');
         $out = fopen($path, 'w+b');
-        fseek($in, $start);
-        stream_copy_to_stream($in, $out, $length);
+
+        // Parts are staged as PLAINTEXT and encrypted once on assembly. Copying
+        // ciphertext in here would encrypt it a second time and corrupt the
+        // finished object.
+        if ($srcObject->encrypted) {
+            $ctx = $this->cipher->context($srcBucket->id, $srcKey, $srcObject->version_id);
+            $this->cipher->decryptRangeStream($in, $ctx, $start, $length, $out);
+        } else {
+            fseek($in, $start);
+            stream_copy_to_stream($in, $out, $length);
+        }
+
         fclose($in);
         fclose($out);
 
@@ -979,7 +1058,10 @@ class S3Controller extends Controller
 
         // Stream part-by-part rather than reading them into memory: a 100 GB
         // object must not need 100 GB of RAM to assemble.
-        $out = fopen($final, 'w+b');
+        $encrypted = false;
+        $assembled = $this->cipher->enabled() ? $final.'.plain' : $final;
+
+        $out = fopen($assembled, 'w+b');
         $binaryMd5s = '';
         foreach ($wanted as $n) {
             $pp = $this->storage->partPath($upload->upload_id, (int) $n);
@@ -990,6 +1072,17 @@ class S3Controller extends Controller
         }
         fclose($out);
 
+        if ($this->cipher->enabled()) {
+            $ctx = $this->cipher->context($b->id, $key, $existing?->version_id);
+            $src = fopen($assembled, 'rb');
+            $dst = fopen($final, 'w+b');
+            $this->cipher->encryptStream($src, $dst, $ctx);
+            fclose($src);
+            fclose($dst);
+            @unlink($assembled);
+            $encrypted = true;
+        }
+
         $etag = md5($binaryMd5s).'-'.count($wanted);
 
         if ($existing) {
@@ -999,6 +1092,7 @@ class S3Controller extends Controller
                 'size_bytes' => $total,
                 'content_type' => $upload->content_type,
                 'etag' => $etag,
+                'encrypted' => $encrypted,
                 'last_modified' => now(),
             ])->save();
         } else {
@@ -1007,6 +1101,7 @@ class S3Controller extends Controller
                 'size_bytes' => $total,
                 'content_type' => $upload->content_type,
                 'etag' => $etag,
+                'encrypted' => $encrypted,
                 'last_modified' => now(),
             ]);
         }

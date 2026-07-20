@@ -12,7 +12,7 @@ class StorageObject extends Model
     protected $fillable = [
         'bucket_id', 'key', 'size_bytes', 'content_type', 'etag', 'last_modified',
         'tags', 'version_id', 'is_latest', 'is_delete_marker',
-        'lock_mode', 'lock_retain_until', 'legal_hold',
+        'lock_mode', 'lock_retain_until', 'legal_hold', 'encrypted',
     ];
 
     protected function casts(): array
@@ -22,6 +22,7 @@ class StorageObject extends Model
             'is_latest' => 'boolean',
             'is_delete_marker' => 'boolean',
             'legal_hold' => 'boolean',
+            'encrypted' => 'boolean',
             'lock_retain_until' => 'datetime',
             'size_bytes' => 'integer',
             'last_modified' => 'datetime',
