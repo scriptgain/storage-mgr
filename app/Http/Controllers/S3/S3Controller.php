@@ -64,6 +64,28 @@ class S3Controller extends Controller
             return S3Xml::error('InvalidBucketName', null, '/'.$bucket);
         }
 
+        // PutObjectLockConfiguration shares the bucket PUT route.
+        if ($request->has('object-lock')) {
+            $b = $this->findBucket($request, $bucket);
+            if (! $b instanceof Bucket) {
+                return $b;
+            }
+            $body = $request->getContent();
+            preg_match('/<Mode>(GOVERNANCE|COMPLIANCE)<\/Mode>/i', $body, $mode);
+            preg_match('/<Days>(\d+)<\/Days>/i', $body, $days);
+            preg_match('/<Years>(\d+)<\/Years>/i', $body, $years);
+
+            $b->forceFill([
+                'object_lock_enabled' => str_contains($body, '<ObjectLockEnabled>Enabled</ObjectLockEnabled>'),
+                'default_lock_mode' => $mode[1] ?? null,
+                'default_lock_days' => isset($years[1]) ? ((int) $years[1]) * 365 : (isset($days[1]) ? (int) $days[1] : null),
+                // Object Lock requires versioning; enabling one enables the other.
+                'versioning' => true,
+            ])->save();
+
+            return response('', 200);
+        }
+
         // PutBucketVersioning shares the bucket PUT route.
         if ($request->has('versioning')) {
             $b = $this->findBucket($request, $bucket);
@@ -163,8 +185,14 @@ class S3Controller extends Controller
         $quiet = str_contains($request->getContent(), '<Quiet>true</Quiet>');
 
         $deleted = '';
+        $errors = '';
         foreach ($keys as $key) {
             $o = $b->objects()->where('key', $key)->first();
+            if ($o && $o->isLocked()) {
+                $errors .= '<Error><Key>'.S3Xml::esc($key).'</Key><Code>AccessDenied</Code>'
+                    .'<Message>Object is protected by an object lock.</Message></Error>';
+                continue;
+            }
             if ($o) {
                 $this->storage->delete($o);
                 $o->delete();
@@ -178,7 +206,7 @@ class S3Controller extends Controller
 
         return S3Xml::response(
             '<?xml version="1.0" encoding="UTF-8"?>'
-            .'<DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'.$deleted.'</DeleteResult>'
+            .'<DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'.$deleted.$errors.'</DeleteResult>'
         );
     }
 
@@ -222,9 +250,26 @@ class S3Controller extends Controller
             return $this->listObjectVersions($request, $b);
         }
 
+        if ($request->has('object-lock')) {
+            if (! $b->object_lock_enabled) {
+                return S3Xml::error('ObjectLockConfigurationNotFoundError', 'Object Lock is not enabled for this bucket.', '/'.$b->name);
+            }
+            $rule = $b->default_lock_mode
+                ? '<Rule><DefaultRetention><Mode>'.S3Xml::esc($b->default_lock_mode).'</Mode>'
+                    .'<Days>'.(int) $b->default_lock_days.'</Days></DefaultRetention></Rule>'
+                : '';
+
+            return S3Xml::response(
+                '<?xml version="1.0" encoding="UTF-8"?>'
+                .'<ObjectLockConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+                .'<ObjectLockEnabled>Enabled</ObjectLockEnabled>'.$rule
+                .'</ObjectLockConfiguration>'
+            );
+        }
+
         // Unsupported sub-resources must answer in S3's shape, not with the
         // object listing, or clients misread the response entirely.
-        foreach (['policy', 'acl', 'lifecycle', 'replication', 'encryption', 'notification', 'cors', 'object-lock', 'accelerate', 'logging', 'website', 'requestPayment', 'analytics', 'inventory', 'metrics'] as $sub) {
+        foreach (['policy', 'acl', 'lifecycle', 'replication', 'encryption', 'notification', 'cors', 'accelerate', 'logging', 'website', 'requestPayment', 'analytics', 'inventory', 'metrics'] as $sub) {
             if ($request->has($sub)) {
                 return $sub === 'versioning'
                     ? S3Xml::response('<?xml version="1.0" encoding="UTF-8"?><VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>')
@@ -320,6 +365,43 @@ class S3Controller extends Controller
             return $this->uploadPart($request, $b, $key);
         }
 
+        // PutObjectRetention / PutObjectLegalHold share this route.
+        if ($request->has('retention') || $request->has('legal-hold')) {
+            $versionId = (string) $request->query('versionId', '');
+            $o = $versionId !== ''
+                ? $b->objects()->where('key', $key)->where('version_id', $versionId)->first()
+                : $b->objects()->where('key', $key)->where('is_latest', true)->first();
+            if (! $o) {
+                return S3Xml::error('NoSuchKey', null, '/'.$bucket.'/'.$key);
+            }
+
+            $body = $request->getContent();
+
+            if ($request->has('legal-hold')) {
+                $o->forceFill(['legal_hold' => str_contains($body, '<Status>ON</Status>')])->save();
+
+                return response('', 200);
+            }
+
+            preg_match('/<Mode>(GOVERNANCE|COMPLIANCE)<\/Mode>/i', $body, $mode);
+            preg_match('/<RetainUntilDate>([^<]+)<\/RetainUntilDate>/i', $body, $until);
+
+            // Retention may be extended but never shortened, and COMPLIANCE
+            // cannot be reduced or removed by anyone. That is the whole point
+            // of the mode, so it is enforced here rather than trusted.
+            if ($o->lock_mode === 'COMPLIANCE' && $o->lock_retain_until && isset($until[1])
+                && strtotime($until[1]) < $o->lock_retain_until->timestamp) {
+                return S3Xml::error('AccessDenied', 'A COMPLIANCE retention period cannot be shortened.', '/'.$bucket.'/'.$key);
+            }
+
+            $o->forceFill([
+                'lock_mode' => $mode[1] ?? $o->lock_mode,
+                'lock_retain_until' => isset($until[1]) ? date('Y-m-d H:i:s', strtotime($until[1])) : $o->lock_retain_until,
+            ])->save();
+
+            return response('', 200);
+        }
+
         // PutObjectTagging shares this route.
         if ($request->has('tagging')) {
             $o = $b->objects()->where('key', $key)->first();
@@ -394,7 +476,7 @@ class S3Controller extends Controller
                 'is_latest' => true,
                 'is_delete_marker' => false,
                 'last_modified' => now(),
-            ], fn ($v) => $v !== null)
+            ], fn ($v) => $v !== null) + $this->lockOnUpload($request, $b)
         );
         $b->refreshStats();
 
@@ -406,6 +488,29 @@ class S3Controller extends Controller
     /** GET /{bucket}/{key} — GetObject, with Range support */
     public function getObject(Request $request, string $bucket, string $key)
     {
+        // GetObjectRetention / GetObjectLegalHold share this route.
+        if ($request->has('retention') || $request->has('legal-hold')) {
+            [$b, $o, $err] = $this->findObject($request, $bucket, $key);
+            if ($err) {
+                return $err;
+            }
+
+            if ($request->has('legal-hold')) {
+                return S3Xml::response(S3Xml::doc('LegalHold', [
+                    'Status' => $o->legal_hold ? 'ON' : 'OFF',
+                ]));
+            }
+
+            if (! $o->lock_mode) {
+                return S3Xml::error('NoSuchObjectLockConfiguration', 'The object does not have a retention period.', '/'.$bucket.'/'.$key);
+            }
+
+            return S3Xml::response(S3Xml::doc('Retention', [
+                'Mode' => $o->lock_mode,
+                'RetainUntilDate' => optional($o->lock_retain_until)->toIso8601ZuluString(),
+            ]));
+        }
+
         // GetObjectTagging shares this route. Clients call it during ordinary
         // work (the AWS CLI reads tags before a multipart copy), so it must
         // answer properly rather than fall through to returning the object.
@@ -529,6 +634,14 @@ class S3Controller extends Controller
         // An explicit version is removed for good, including its bytes.
         if ($versionId !== '') {
             $o = $b->objects()->where('key', $key)->where('version_id', $versionId)->first();
+            if ($o && $o->isLocked()) {
+                // GOVERNANCE can be bypassed with the explicit header;
+                // COMPLIANCE and legal holds cannot be bypassed at all.
+                $bypass = strtolower((string) $request->header('x-amz-bypass-governance-retention')) === 'true';
+                if ($o->legal_hold || $o->lock_mode === 'COMPLIANCE' || ! $bypass) {
+                    return S3Xml::error('AccessDenied', 'Object is protected by an object lock.', '/'.$b->name.'/'.$key);
+                }
+            }
             if ($o) {
                 $wasLatest = (bool) $o->is_latest;
                 $this->storage->delete($o);
@@ -1013,6 +1126,39 @@ class S3Controller extends Controller
             .$body
             .'</ListVersionsResult>'
         );
+    }
+
+    /**
+     * Lock state for a newly uploaded object: explicit x-amz-object-lock-*
+     * headers win, otherwise the bucket's default retention applies.
+     *
+     * @return array<string,mixed>
+     */
+    private function lockOnUpload(Request $request, Bucket $b): array
+    {
+        $mode = strtoupper((string) $request->header('x-amz-object-lock-mode'));
+        $until = (string) $request->header('x-amz-object-lock-retain-until-date');
+        $hold = strtoupper((string) $request->header('x-amz-object-lock-legal-hold')) === 'ON';
+
+        if ($mode === '' && $until === '' && ! $hold && $b->object_lock_enabled && $b->default_lock_mode) {
+            return [
+                'lock_mode' => $b->default_lock_mode,
+                'lock_retain_until' => now()->addDays((int) ($b->default_lock_days ?: 0)),
+            ];
+        }
+
+        $out = [];
+        if ($mode !== '') {
+            $out['lock_mode'] = $mode;
+        }
+        if ($until !== '' && strtotime($until)) {
+            $out['lock_retain_until'] = date('Y-m-d H:i:s', strtotime($until));
+        }
+        if ($hold) {
+            $out['legal_hold'] = true;
+        }
+
+        return $out;
     }
 
     /** Render a tag set as S3's Tagging document (empty set is valid). */

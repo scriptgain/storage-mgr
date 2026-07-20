@@ -12,6 +12,7 @@ class StorageObject extends Model
     protected $fillable = [
         'bucket_id', 'key', 'size_bytes', 'content_type', 'etag', 'last_modified',
         'tags', 'version_id', 'is_latest', 'is_delete_marker',
+        'lock_mode', 'lock_retain_until', 'legal_hold',
     ];
 
     protected function casts(): array
@@ -20,6 +21,8 @@ class StorageObject extends Model
             'tags' => 'array',
             'is_latest' => 'boolean',
             'is_delete_marker' => 'boolean',
+            'legal_hold' => 'boolean',
+            'lock_retain_until' => 'datetime',
             'size_bytes' => 'integer',
             'last_modified' => 'datetime',
         ];
@@ -53,6 +56,19 @@ class StorageObject extends Model
     public function scopeCurrent($query)
     {
         return $query->where('is_latest', true)->where('is_delete_marker', false);
+    }
+
+    /**
+     * Is this version protected from deletion right now? A legal hold blocks
+     * removal indefinitely; retention blocks it until the date passes.
+     */
+    public function isLocked(): bool
+    {
+        if ($this->legal_hold) {
+            return true;
+        }
+
+        return $this->lock_retain_until !== null && $this->lock_retain_until->isFuture();
     }
 
     public function isFolder(): bool

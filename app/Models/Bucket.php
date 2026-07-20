@@ -26,6 +26,7 @@ class Bucket extends Model
 
     protected $fillable = [
         'user_id', 'name', 'region', 'access', 'versioning', 'quota_bytes', 'object_count', 'size_bytes',
+        'object_lock_enabled', 'default_lock_mode', 'default_lock_days',
         'tags',
     ];
 
@@ -34,6 +35,7 @@ class Bucket extends Model
         return [
             'tags' => 'array',
             'versioning' => 'boolean',
+            'object_lock_enabled' => 'boolean',
             'quota_bytes' => 'integer',
             'object_count' => 'integer',
             'size_bytes' => 'integer',

@@ -97,6 +97,12 @@ class BucketObjectController extends Controller
         abort_unless($bucket->isVisibleTo(auth()->user()), 403);
         abort_unless($object->bucket_id === $bucket->id, 404);
 
+        // Object Lock must hold in the console too, or WORM protection is
+        // only as strong as "do not click that button".
+        if ($object->isLocked()) {
+            return back()->with('warning', "\"{$object->key}\" is protected by an object lock and cannot be deleted.");
+        }
+
         $key = $object->key;
         $this->storage->delete($object);
         $object->delete();
@@ -119,9 +125,14 @@ class BucketObjectController extends Controller
             'ids.*' => ['integer'],
         ]);
 
-        $ids = $bucket->objects()->whereIn('id', $data['ids'])->pluck('id');
+        $selected = $bucket->objects()->whereIn('id', $data['ids'])->get();
+        $locked = $selected->filter(fn (StorageObject $o) => $o->isLocked());
+        $ids = $selected->reject(fn (StorageObject $o) => $o->isLocked())->pluck('id');
+
         if ($ids->isEmpty()) {
-            return back()->with('warning', 'No matching objects were selected.');
+            return back()->with('warning', $locked->isNotEmpty()
+                ? 'Every selected object is protected by an object lock.'
+                : 'No matching objects were selected.');
         }
 
         // Remove bytes before the rows, or the paths become unrecoverable.
@@ -132,6 +143,8 @@ class BucketObjectController extends Controller
         $bucket->refreshStats();
         AuditLog::record('deleted', "Bulk deleted {$count} object".($count === 1 ? '' : 's')." from bucket \"{$bucket->name}\"");
 
-        return back()->with('status', $count.' object'.($count === 1 ? '' : 's').' deleted.');
+        $note = $locked->isNotEmpty() ? ' '.$locked->count().' skipped (object lock).' : '';
+
+        return back()->with('status', $count.' object'.($count === 1 ? '' : 's').' deleted.'.$note);
     }
 }
