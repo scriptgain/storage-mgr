@@ -12,6 +12,9 @@ Artisan::command('inspire', function () {
 // so it is safe to attempt hourly (installer wires `schedule:run` cron).
 Schedule::command('storage:maintenance')->hourly()->withoutOverlapping();
 
+// Lifecycle rules: expiry, superseded versions, abandoned multipart uploads.
+Schedule::command('storage:lifecycle')->hourly()->withoutOverlapping();
+
 // Periodic ONLINE license validation against ScriptGain (~every 2 days).
 // Verifies the signed /v1/validate response and drives the same lockdown as the
 // offline .lic path. Safe to run when no key is configured (it no-ops).

@@ -64,6 +64,17 @@ class S3Controller extends Controller
             return S3Xml::error('InvalidBucketName', null, '/'.$bucket);
         }
 
+        // PutBucketLifecycleConfiguration shares the bucket PUT route.
+        if ($request->has('lifecycle')) {
+            $b = $this->findBucket($request, $bucket);
+            if (! $b instanceof Bucket) {
+                return $b;
+            }
+            $b->forceFill(['lifecycle' => \App\Services\S3\LifecycleEngine::parse($request->getContent())])->save();
+
+            return response('', 200);
+        }
+
         // PutObjectLockConfiguration shares the bucket PUT route.
         if ($request->has('object-lock')) {
             $b = $this->findBucket($request, $bucket);
@@ -144,6 +155,13 @@ class S3Controller extends Controller
         $b = $this->findBucket($request, $bucket);
         if (! $b instanceof Bucket) {
             return $b;
+        }
+
+        // DeleteBucketLifecycle clears the rules, not the bucket.
+        if ($request->has('lifecycle')) {
+            $b->forceFill(['lifecycle' => null])->save();
+
+            return response('', 204);
         }
 
         // DeleteBucketTagging clears tags rather than removing the bucket.
@@ -250,6 +268,14 @@ class S3Controller extends Controller
             return $this->listObjectVersions($request, $b);
         }
 
+        if ($request->has('lifecycle')) {
+            if (empty($b->lifecycle)) {
+                return S3Xml::error('NoSuchLifecycleConfiguration', 'The bucket has no lifecycle configuration.', '/'.$b->name);
+            }
+
+            return S3Xml::response(\App\Services\S3\LifecycleEngine::toXml((array) $b->lifecycle));
+        }
+
         if ($request->has('object-lock')) {
             if (! $b->object_lock_enabled) {
                 return S3Xml::error('ObjectLockConfigurationNotFoundError', 'Object Lock is not enabled for this bucket.', '/'.$b->name);
@@ -269,7 +295,7 @@ class S3Controller extends Controller
 
         // Unsupported sub-resources must answer in S3's shape, not with the
         // object listing, or clients misread the response entirely.
-        foreach (['policy', 'acl', 'lifecycle', 'replication', 'encryption', 'notification', 'cors', 'accelerate', 'logging', 'website', 'requestPayment', 'analytics', 'inventory', 'metrics'] as $sub) {
+        foreach (['policy', 'acl', 'replication', 'encryption', 'notification', 'cors', 'accelerate', 'logging', 'website', 'requestPayment', 'analytics', 'inventory', 'metrics'] as $sub) {
             if ($request->has($sub)) {
                 return $sub === 'versioning'
                     ? S3Xml::response('<?xml version="1.0" encoding="UTF-8"?><VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>')
