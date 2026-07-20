@@ -28,6 +28,8 @@ class S3Xml
         'QuotaExceeded' => 400,
         'NotImplemented' => 501,
         'InternalError' => 500,
+        'NoSuchUpload' => 404,
+        'InvalidPart' => 400,
     ];
 
     public static function error(string $code, ?string $message = null, ?string $resource = null): Response

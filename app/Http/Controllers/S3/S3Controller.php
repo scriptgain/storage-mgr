@@ -4,6 +4,8 @@ namespace App\Http\Controllers\S3;
 
 use App\Http\Controllers\Controller;
 use App\Models\Bucket;
+use App\Models\MultipartPart;
+use App\Models\MultipartUpload;
 use App\Models\StorageObject;
 use App\Models\User;
 use App\Services\ObjectStorage;
@@ -115,6 +117,31 @@ class S3Controller extends Controller
             return $b;
         }
 
+        // Sub-resources that share the bucket GET route. Clients call these
+        // during setup — mc asks for the location before it will do anything.
+        if ($request->has('location')) {
+            return S3Xml::response(
+                '<?xml version="1.0" encoding="UTF-8"?>'
+                .'<LocationConstraint xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+                .S3Xml::esc($b->region ?: 'us-east-1')
+                .'</LocationConstraint>'
+            );
+        }
+
+        if ($request->has('uploads')) {
+            return $this->listMultipartUploads($b);
+        }
+
+        // Unsupported sub-resources must answer in S3's shape, not with the
+        // object listing, or clients misread the response entirely.
+        foreach (['versioning', 'policy', 'acl', 'tagging', 'lifecycle', 'replication', 'encryption', 'notification', 'cors', 'object-lock', 'accelerate', 'logging', 'website', 'requestPayment', 'analytics', 'inventory', 'metrics'] as $sub) {
+            if ($request->has($sub)) {
+                return $sub === 'versioning'
+                    ? S3Xml::response('<?xml version="1.0" encoding="UTF-8"?><VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>')
+                    : S3Xml::error('NotImplemented', "The {$sub} sub-resource is not supported.", '/'.$b->name);
+            }
+        }
+
         $prefix = (string) $request->query('prefix', '');
         $delimiter = (string) $request->query('delimiter', '');
         $maxKeys = max(1, min(1000, (int) $request->query('max-keys', 1000)));
@@ -185,7 +212,7 @@ class S3Controller extends Controller
 
     // ----------------------------------------------------------------- object
 
-    /** PUT /{bucket}/{key} — PutObject */
+    /** PUT /{bucket}/{key} — PutObject, or UploadPart when part params are present */
     public function putObject(Request $request, string $bucket, string $key)
     {
         $b = $this->findBucket($request, $bucket);
@@ -196,6 +223,11 @@ class S3Controller extends Controller
         $key = ltrim($key, '/');
         if ($key === '') {
             return S3Xml::error('NoSuchKey', null, '/'.$bucket);
+        }
+
+        // SDKs address parts on the same PUT route, distinguished by query args.
+        if ($request->query('uploadId') && $request->query('partNumber')) {
+            return $this->uploadPart($request, $b, $key);
         }
 
         // Copy the body to a temp file first: it may be chunk-framed, and we
@@ -250,6 +282,15 @@ class S3Controller extends Controller
     /** GET /{bucket}/{key} — GetObject, with Range support */
     public function getObject(Request $request, string $bucket, string $key)
     {
+        // ListParts shares this route, keyed off the uploadId query arg.
+        if ($request->query('uploadId')) {
+            $b = $this->findBucket($request, $bucket);
+
+            return $b instanceof Bucket
+                ? $this->listParts($request, $b, ltrim($key, '/'))
+                : $b;
+        }
+
         [$b, $o, $err] = $this->findObject($request, $bucket, $key);
         if ($err) {
             return $err;
@@ -336,6 +377,11 @@ class S3Controller extends Controller
             return $b;
         }
 
+        // AbortMultipartUpload shares this route.
+        if ($request->query('uploadId')) {
+            return $this->abortMultipartUpload($request, $b, ltrim($key, '/'));
+        }
+
         $o = $b->objects()->where('key', ltrim($key, '/'))->first();
         if ($o) {
             $this->storage->delete($o);
@@ -344,6 +390,269 @@ class S3Controller extends Controller
         }
 
         return response('', 204);
+    }
+
+    // -------------------------------------------------------------- multipart
+
+    /**
+     * POST /{bucket}/{key} — dispatches the two multipart POST operations,
+     * which S3 tells apart by query string rather than by path.
+     */
+    public function postObject(Request $request, string $bucket, string $key)
+    {
+        $b = $this->findBucket($request, $bucket);
+        if (! $b instanceof Bucket) {
+            return $b;
+        }
+
+        $key = ltrim($key, '/');
+
+        if ($request->has('uploads')) {
+            return $this->createMultipartUpload($request, $b, $key);
+        }
+
+        if ($request->query('uploadId')) {
+            return $this->completeMultipartUpload($request, $b, $key);
+        }
+
+        return S3Xml::error('NotImplemented', null, '/'.$bucket.'/'.$key);
+    }
+
+    /** POST /{bucket}/{key}?uploads — CreateMultipartUpload */
+    private function createMultipartUpload(Request $request, Bucket $b, string $key)
+    {
+        $upload = MultipartUpload::create([
+            'bucket_id' => $b->id,
+            'user_id' => $this->user($request)?->id,
+            'object_key' => $key,
+            'upload_id' => bin2hex(random_bytes(24)),
+            'content_type' => $request->header('Content-Type') ?: 'application/octet-stream',
+        ]);
+
+        return S3Xml::response(S3Xml::doc('InitiateMultipartUploadResult', [
+            'Bucket' => $b->name,
+            'Key' => $key,
+            'UploadId' => $upload->upload_id,
+        ]));
+    }
+
+    /** PUT /{bucket}/{key}?partNumber=N&uploadId=X — UploadPart */
+    private function uploadPart(Request $request, Bucket $b, string $key)
+    {
+        $upload = $this->findUpload($b, $key, (string) $request->query('uploadId'));
+        if (! $upload) {
+            return S3Xml::error('NoSuchUpload', 'The specified multipart upload does not exist.', '/'.$b->name.'/'.$key);
+        }
+
+        $partNumber = (int) $request->query('partNumber');
+        if ($partNumber < 1 || $partNumber > 10000) {
+            return S3Xml::error('InvalidPart', 'Part number must be between 1 and 10000.', '/'.$b->name.'/'.$key);
+        }
+
+        $dir = $this->storage->multipartDir($upload->upload_id);
+        if (! $this->storage->ensureDir($dir)) {
+            return S3Xml::error('InternalError', 'Could not stage the upload part.');
+        }
+
+        $path = $this->storage->partPath($upload->upload_id, $partNumber);
+        $out = fopen($path, 'w+b');
+        $in = fopen('php://input', 'rb');
+
+        if (ChunkedDecoder::isChunked($request)) {
+            ChunkedDecoder::decodeStream($in, $out);
+        } else {
+            stream_copy_to_stream($in, $out);
+        }
+
+        fclose($in);
+        fflush($out);
+        $size = (int) ftell($out);
+        fclose($out);
+
+        $etag = md5_file($path) ?: '';
+
+        // Re-uploading a part replaces it; SDKs retry parts on network errors.
+        MultipartPart::updateOrCreate(
+            ['multipart_upload_id' => $upload->id, 'part_number' => $partNumber],
+            ['size_bytes' => $size, 'etag' => $etag]
+        );
+
+        return response('', 200)->header('ETag', '"'.$etag.'"');
+    }
+
+    /**
+     * POST /{bucket}/{key}?uploadId=X — CompleteMultipartUpload.
+     *
+     * Concatenates the parts the client lists, in the order it lists them, and
+     * returns the S3-style composite etag: the MD5 of the concatenated binary
+     * part MD5s, suffixed with the part count. Clients compare against it, so
+     * it has to be computed exactly this way rather than as a hash of the file.
+     */
+    private function completeMultipartUpload(Request $request, Bucket $b, string $key)
+    {
+        $upload = $this->findUpload($b, $key, (string) $request->query('uploadId'));
+        if (! $upload) {
+            return S3Xml::error('NoSuchUpload', 'The specified multipart upload does not exist.', '/'.$b->name.'/'.$key);
+        }
+
+        $wanted = $this->parsePartList($request->getContent());
+        $parts = $upload->parts()->get()->keyBy('part_number');
+
+        if ($wanted === []) {
+            $wanted = $parts->keys()->all(); // tolerate an empty/unparsable body
+        }
+
+        $total = 0;
+        foreach ($wanted as $n) {
+            if (! isset($parts[$n])) {
+                return S3Xml::error('InvalidPart', "Part {$n} was never uploaded.", '/'.$b->name.'/'.$key);
+            }
+            $total += (int) $parts[$n]->size_bytes;
+        }
+
+        $existing = $b->objects()->where('key', $key)->first();
+        if ($this->storage->wouldExceedQuota($b, $total, $existing)) {
+            $this->storage->discardMultipart($upload->upload_id);
+            $upload->delete();
+
+            return S3Xml::error('QuotaExceeded', "The bucket \"{$b->name}\" quota would be exceeded.", '/'.$b->name.'/'.$key);
+        }
+
+        $final = $this->storage->pathFor($b, $key);
+        if (! $this->storage->ensureDir(dirname($final))) {
+            return S3Xml::error('InternalError', 'Could not create the destination directory.');
+        }
+
+        // Stream part-by-part rather than reading them into memory: a 100 GB
+        // object must not need 100 GB of RAM to assemble.
+        $out = fopen($final, 'w+b');
+        $binaryMd5s = '';
+        foreach ($wanted as $n) {
+            $pp = $this->storage->partPath($upload->upload_id, (int) $n);
+            $in = fopen($pp, 'rb');
+            stream_copy_to_stream($in, $out);
+            fclose($in);
+            $binaryMd5s .= hex2bin((string) $parts[$n]->etag) ?: '';
+        }
+        fclose($out);
+
+        $etag = md5($binaryMd5s).'-'.count($wanted);
+
+        if ($existing) {
+            // The old bytes were already replaced on disk by the write above,
+            // so only the row needs updating.
+            $existing->fill([
+                'size_bytes' => $total,
+                'content_type' => $upload->content_type,
+                'etag' => $etag,
+                'last_modified' => now(),
+            ])->save();
+        } else {
+            $b->objects()->create([
+                'key' => $key,
+                'size_bytes' => $total,
+                'content_type' => $upload->content_type,
+                'etag' => $etag,
+                'last_modified' => now(),
+            ]);
+        }
+
+        $this->storage->discardMultipart($upload->upload_id);
+        $upload->delete();
+        $b->refreshStats();
+
+        return S3Xml::response(S3Xml::doc('CompleteMultipartUploadResult', [
+            'Location' => $request->getSchemeAndHttpHost().'/'.$b->name.'/'.$key,
+            'Bucket' => $b->name,
+            'Key' => $key,
+            'ETag' => '"'.$etag.'"',
+        ]));
+    }
+
+    /** DELETE /{bucket}/{key}?uploadId=X — AbortMultipartUpload */
+    private function abortMultipartUpload(Request $request, Bucket $b, string $key)
+    {
+        $upload = $this->findUpload($b, $key, (string) $request->query('uploadId'));
+        if ($upload) {
+            $this->storage->discardMultipart($upload->upload_id);
+            $upload->delete();
+        }
+
+        return response('', 204);
+    }
+
+    /** GET /{bucket}/{key}?uploadId=X — ListParts */
+    private function listParts(Request $request, Bucket $b, string $key)
+    {
+        $upload = $this->findUpload($b, $key, (string) $request->query('uploadId'));
+        if (! $upload) {
+            return S3Xml::error('NoSuchUpload', null, '/'.$b->name.'/'.$key);
+        }
+
+        $items = '';
+        foreach ($upload->parts as $p) {
+            $items .= '<Part>'
+                .'<PartNumber>'.(int) $p->part_number.'</PartNumber>'
+                .'<LastModified>'.$p->updated_at->toIso8601ZuluString().'</LastModified>'
+                .'<ETag>&quot;'.S3Xml::esc((string) $p->etag).'&quot;</ETag>'
+                .'<Size>'.(int) $p->size_bytes.'</Size>'
+                .'</Part>';
+        }
+
+        return S3Xml::response(
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            .'<ListPartsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+            .'<Bucket>'.S3Xml::esc($b->name).'</Bucket>'
+            .'<Key>'.S3Xml::esc($key).'</Key>'
+            .'<UploadId>'.S3Xml::esc($upload->upload_id).'</UploadId>'
+            .'<IsTruncated>false</IsTruncated>'
+            .$items
+            .'</ListPartsResult>'
+        );
+    }
+
+    /** GET /{bucket}?uploads — ListMultipartUploads (mc probes this) */
+    private function listMultipartUploads(Bucket $b)
+    {
+        $items = '';
+        foreach (MultipartUpload::where('bucket_id', $b->id)->get() as $u) {
+            $items .= '<Upload>'
+                .'<Key>'.S3Xml::esc($u->object_key).'</Key>'
+                .'<UploadId>'.S3Xml::esc($u->upload_id).'</UploadId>'
+                .'<Initiated>'.$u->created_at->toIso8601ZuluString().'</Initiated>'
+                .'</Upload>';
+        }
+
+        return S3Xml::response(
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            .'<ListMultipartUploadsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+            .'<Bucket>'.S3Xml::esc($b->name).'</Bucket>'
+            .'<IsTruncated>false</IsTruncated>'
+            .$items
+            .'</ListMultipartUploadsResult>'
+        );
+    }
+
+    private function findUpload(Bucket $b, string $key, string $uploadId): ?MultipartUpload
+    {
+        return MultipartUpload::where('bucket_id', $b->id)
+            ->where('object_key', $key)
+            ->where('upload_id', $uploadId)
+            ->first();
+    }
+
+    /** Pull the part numbers out of a CompleteMultipartUpload body, in order. */
+    private function parsePartList(string $xml): array
+    {
+        if (trim($xml) === '') {
+            return [];
+        }
+
+        if (preg_match_all('/<PartNumber>\s*(\d+)\s*<\/PartNumber>/i', $xml, $m)) {
+            return array_map('intval', $m[1]);
+        }
+
+        return [];
     }
 
     // ---------------------------------------------------------------- helpers

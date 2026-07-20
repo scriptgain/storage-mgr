@@ -95,6 +95,38 @@ class ObjectStorage
         ];
     }
 
+    /** Directory holding the parts of an in-progress multipart upload. */
+    public function multipartDir(string $uploadId): string
+    {
+        // Keep parts outside the bucket directories so a half-finished upload
+        // can never be mistaken for a stored object.
+        return $this->root().'/_multipart/'.preg_replace('/[^A-Za-z0-9]/', '', $uploadId);
+    }
+
+    public function partPath(string $uploadId, int $partNumber): string
+    {
+        return $this->multipartDir($uploadId).'/'.$partNumber;
+    }
+
+    /** Drop every part file for an upload (completion or abort). */
+    public function discardMultipart(string $uploadId): void
+    {
+        $dir = $this->multipartDir($uploadId);
+        if (! is_dir($dir)) {
+            return;
+        }
+        foreach (glob($dir.'/*') ?: [] as $f) {
+            @unlink($f);
+        }
+        @rmdir($dir);
+    }
+
+    /** Ensure a directory exists, returning false if it cannot be created. */
+    public function ensureDir(string $dir): bool
+    {
+        return is_dir($dir) || @mkdir($dir, 0775, true) || is_dir($dir);
+    }
+
     /** Remove one object's bytes. Safe to call when the file is already gone. */
     public function delete(StorageObject $object): void
     {

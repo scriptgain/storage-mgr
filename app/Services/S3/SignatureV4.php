@@ -146,23 +146,44 @@ class SignatureV4
         return implode('/', $segments);
     }
 
-    /** Query parameters sorted by name, URI-encoded, excluding the signature itself. */
+    /**
+     * Query parameters sorted by name, URI-encoded, excluding the signature.
+     *
+     * Built from the RAW query string on purpose. Reading $request->query would
+     * be wrong twice over: Laravel's global ConvertEmptyStringsToNull rewrites
+     * empty values to null, and PHP's parser mangles some names. Clients sign
+     * what they sent, so anything that edits the parameters on the way in makes
+     * every signature fail — "?prefix=" and valueless flags like "?uploads"
+     * (which S3 uses heavily) are exactly the cases that break.
+     */
     private function canonicalQuery(Request $request, bool $isPresigned): string
     {
-        $params = $request->query->all();
-        if ($isPresigned) {
-            unset($params['X-Amz-Signature']);
+        $raw = (string) $request->server->get('QUERY_STRING', '');
+        if ($raw === '') {
+            return '';
         }
-        ksort($params);
 
         $pairs = [];
-        foreach ($params as $name => $value) {
-            foreach ((array) $value as $v) {
-                $pairs[] = rawurlencode((string) $name).'='.rawurlencode((string) $v);
+        foreach (explode('&', $raw) as $part) {
+            if ($part === '') {
+                continue;
             }
+
+            $eq = strpos($part, '=');
+            $name = $eq === false ? rawurldecode($part) : rawurldecode(substr($part, 0, $eq));
+            $value = $eq === false ? '' : rawurldecode(substr($part, $eq + 1));
+
+            if ($isPresigned && $name === 'X-Amz-Signature') {
+                continue;
+            }
+
+            $pairs[] = [rawurlencode($name), rawurlencode($value)];
         }
 
-        return implode('&', $pairs);
+        // Sort by encoded name, then encoded value, as the spec requires.
+        usort($pairs, fn ($a, $b) => [$a[0], $a[1]] <=> [$b[0], $b[1]]);
+
+        return implode('&', array_map(fn ($p) => $p[0].'='.$p[1], $pairs));
     }
 
     /** Only the headers the client said it signed, lowercased and whitespace-collapsed. */

@@ -30,6 +30,8 @@ Route::middleware('s3.auth')->group(function () {
     Route::delete('/{bucket}', [S3Controller::class, 'deleteBucket'])->where('bucket', '[^/]+');
 
     // {key} is greedy: object keys legitimately contain slashes.
+    // POST carries the multipart create/complete operations.
+    Route::post('/{bucket}/{key}', [S3Controller::class, 'postObject'])->where('key', '.*');
     Route::put('/{bucket}/{key}', [S3Controller::class, 'putObject'])->where('key', '.*');
     Route::get('/{bucket}/{key}', [S3Controller::class, 'getObject'])->where('key', '.*');
     Route::match(['head'], '/{bucket}/{key}', [S3Controller::class, 'headObject'])->where('key', '.*');
