@@ -11,7 +11,7 @@
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div class="lg:col-span-2">
             <x-card title="Document">
-                <pre class="text-xs font-mono bg-slate-50 rounded-lg p-4 overflow-x-auto ring-1 ring-slate-100">{{ $policy->document }}</pre>
+                <pre class="text-xs font-mono bg-slate-50 rounded-lg p-4 overflow-x-auto ring-1 ring-slate-200">{{ $policy->document }}</pre>
             </x-card>
         </div>
         <div>
