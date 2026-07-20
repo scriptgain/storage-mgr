@@ -7,7 +7,7 @@ return [
     'name' => env('BRAND_NAME', env('APP_NAME', 'Backup Manager')),
     'tagline' => env('BRAND_TAGLINE', 'Self-Hosted Backup'),
     // Accent hex; overrides the cyan brand ramp at runtime. Settable in the UI.
-    'accent' => env('BRAND_ACCENT', '#dc2626'),
+    'accent' => env('BRAND_ACCENT', '#0d9488'),
     // Brand glyph (icon-component name); the wordmark + favicon both use it.
     'icon' => env('BRAND_ICON', 'database'),
 ];
