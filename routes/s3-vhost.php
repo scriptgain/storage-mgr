@@ -18,7 +18,7 @@ use Illuminate\Support\Facades\Route;
 |
 */
 
-Route::middleware('s3.auth')->group(function () {
+Route::middleware(['s3.auth', 's3.policy'])->group(function () {
     Route::get('/', [S3Controller::class, 'listObjects']);
     Route::put('/', [S3Controller::class, 'createBucket']);
     Route::post('/', [S3Controller::class, 'deleteObjects']);

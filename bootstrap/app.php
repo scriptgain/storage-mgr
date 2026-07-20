@@ -46,6 +46,7 @@ return Application::configure(basePath: dirname(__DIR__))
             'license.offline' => \App\Http\Middleware\EnforceLicense::class,
             'setup' => \App\Http\Middleware\EnsureSetup::class,
             's3.auth' => \App\Http\Middleware\AuthenticateS3::class,
+            's3.policy' => \App\Http\Middleware\EnforceS3Policy::class,
         ]);
 
         // Perimeter guard on every web request: IP bans + optional allowlist,
