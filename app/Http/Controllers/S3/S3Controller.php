@@ -806,15 +806,20 @@ class S3Controller extends Controller
         }
 
         $size = (int) filesize($srcPath);
-        $existing = $dest->objects()->where('key', $key)->first();
+        // A copy into a versioned bucket becomes a new version, exactly like any
+        // other write; only then is the quota counted as a full add.
+        $versioned = (bool) $dest->versioning;
+        $versionId = $versioned ? $this->newVersionId() : 'null';
+        $existing = $dest->objects()->where('key', $key)->where('is_latest', true)->first();
 
-        if ($this->storage->wouldExceedQuota($dest, $size, $existing)) {
+        if ($this->storage->wouldExceedQuota($dest, $size, $versioned ? null : $existing)) {
             return S3Xml::error('QuotaExceeded', "The bucket \"{$dest->name}\" quota would be exceeded.", '/'.$dest->name.'/'.$key);
         }
 
-        // Copying a key onto itself is a metadata-only operation in S3; doing
-        // the file copy would truncate the source before reading it.
-        $destPath = $this->storage->pathFor($dest, $key);
+        // Copying a key onto itself in an unversioned bucket is metadata-only;
+        // doing the file copy would truncate the source before reading it. In a
+        // versioned bucket the new version has its own path, so the copy runs.
+        $destPath = $this->storage->pathFor($dest, $key, $versionId);
         $destEncrypted = (bool) $srcObject->encrypted;
 
         if ($srcPath !== $destPath) {
@@ -827,7 +832,7 @@ class S3Controller extends Controller
             // it through plaintext instead.
             if ($srcObject->encrypted || $this->cipher->enabled()) {
                 $srcCtx = $this->cipher->context($srcBucket->id, $srcKey, $srcObject->version_id);
-                $dstCtx = $this->cipher->context($dest->id, $key, null);
+                $dstCtx = $this->cipher->context($dest->id, $key, $versionId);
 
                 $plain = tempnam(sys_get_temp_dir(), 's3cp');
                 $in = fopen($srcPath, 'rb');
@@ -855,19 +860,23 @@ class S3Controller extends Controller
             }
         }
 
-        $object = $dest->objects()->updateOrCreate(['key' => $key], [
+        $object = $this->commitVersion($dest, $key, $versionId, $versioned, [
             'size_bytes' => $srcObject->size_bytes,
             'content_type' => $srcObject->content_type,
             'etag' => $srcObject->etag,
             'encrypted' => $destEncrypted,
+            'is_latest' => true,
+            'is_delete_marker' => false,
             'last_modified' => now(),
         ]);
         $dest->refreshStats();
 
-        return S3Xml::response(S3Xml::doc('CopyObjectResult', [
+        $resp = S3Xml::response(S3Xml::doc('CopyObjectResult', [
             'LastModified' => $object->last_modified->toIso8601ZuluString(),
             'ETag' => '"'.$object->etag.'"',
         ]));
+
+        return $versioned ? $resp->header('x-amz-version-id', $versionId) : $resp;
     }
 
     // -------------------------------------------------------------- multipart
