@@ -30,6 +30,7 @@ class S3Xml
         'InternalError' => 500,
         'NoSuchUpload' => 404,
         'InvalidPart' => 400,
+        'InvalidArgument' => 400,
     ];
 
     public static function error(string $code, ?string $message = null, ?string $resource = null): Response

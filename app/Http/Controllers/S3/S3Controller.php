@@ -272,6 +272,13 @@ class S3Controller extends Controller
             return $this->uploadPart($request, $b, $key);
         }
 
+        // A copy is a PUT with no body and a source header. Without this branch
+        // it looks like an empty upload and silently writes a 0-byte object
+        // while the client reports success.
+        if ($request->header('x-amz-copy-source')) {
+            return $this->copyObject($request, $b, $key);
+        }
+
         // Copy the body to a temp file first: it may be chunk-framed, and we
         // need the real length and MD5 before deciding whether it fits the quota.
         $tmp = tempnam(sys_get_temp_dir(), 's3put');
@@ -432,6 +439,74 @@ class S3Controller extends Controller
         }
 
         return response('', 204);
+    }
+
+    /**
+     * PUT /{bucket}/{key} with x-amz-copy-source — CopyObject.
+     *
+     * Server-side copy: "aws s3 cp s3://a s3://b", "aws s3 mv", and mc's
+     * copy/move all use it rather than round-tripping the bytes through the
+     * client.
+     */
+    private function copyObject(Request $request, Bucket $dest, string $key)
+    {
+        $source = rawurldecode((string) $request->header('x-amz-copy-source'));
+        $source = ltrim(strtok($source, '?'), '/');          // drop any ?versionId
+        [$srcBucketName, $srcKey] = array_pad(explode('/', $source, 2), 2, '');
+
+        if ($srcBucketName === '' || $srcKey === '') {
+            return S3Xml::error('InvalidArgument', 'Malformed x-amz-copy-source.', '/'.$dest->name.'/'.$key);
+        }
+
+        $srcBucket = Bucket::where('name', $srcBucketName)->first();
+        if (! $srcBucket) {
+            return S3Xml::error('NoSuchBucket', null, '/'.$srcBucketName);
+        }
+        if (! $srcBucket->isVisibleTo($this->user($request))) {
+            return S3Xml::error('AccessDenied', null, '/'.$srcBucketName);
+        }
+
+        $srcObject = $srcBucket->objects()->where('key', $srcKey)->first();
+        if (! $srcObject) {
+            return S3Xml::error('NoSuchKey', null, '/'.$srcBucketName.'/'.$srcKey);
+        }
+
+        $srcPath = $this->storage->pathFor($srcBucket, $srcKey);
+        if (! is_file($srcPath)) {
+            return S3Xml::error('NoSuchKey', 'The stored data for the source object is no longer available.', '/'.$srcBucketName.'/'.$srcKey);
+        }
+
+        $size = (int) filesize($srcPath);
+        $existing = $dest->objects()->where('key', $key)->first();
+
+        if ($this->storage->wouldExceedQuota($dest, $size, $existing)) {
+            return S3Xml::error('QuotaExceeded', "The bucket \"{$dest->name}\" quota would be exceeded.", '/'.$dest->name.'/'.$key);
+        }
+
+        // Copying a key onto itself is a metadata-only operation in S3; doing
+        // the file copy would truncate the source before reading it.
+        $destPath = $this->storage->pathFor($dest, $key);
+        if ($srcPath !== $destPath) {
+            if (! $this->storage->ensureDir(dirname($destPath))) {
+                return S3Xml::error('InternalError', 'Could not create the destination directory.');
+            }
+            if (! @copy($srcPath, $destPath)) {
+                return S3Xml::error('InternalError', 'Could not copy the object data.');
+            }
+        }
+
+        $object = $dest->objects()->updateOrCreate(['key' => $key], [
+            'size_bytes' => $size,
+            'content_type' => $srcObject->content_type,
+            'etag' => $srcObject->etag,
+            'last_modified' => now(),
+        ]);
+        $dest->refreshStats();
+
+        return S3Xml::response(S3Xml::doc('CopyObjectResult', [
+            'LastModified' => $object->last_modified->toIso8601ZuluString(),
+            'ETag' => '"'.$object->etag.'"',
+        ]));
     }
 
     // -------------------------------------------------------------- multipart
