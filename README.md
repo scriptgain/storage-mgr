@@ -1,58 +1,105 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# StorageMGR
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+**S3-compatible object storage you run yourself.** By
+[ScriptGain](https://scriptgain.com).
 
-## About Laravel
+**[Try the live demo →](https://storage-demo.scriptgain.com)** — no signup required.
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+> **Beta.** StorageMGR is not currently offered for sale. It runs in production
+> on ScriptGain infrastructure and the demo is live, but there is no purchase plan
+> on the storefront yet.
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+## Who it's for
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+Anyone who wants an S3 endpoint on their own hardware: application backups,
+customer file storage, media origin, log archive, or a target for backup software
+that only speaks S3.
 
-## Learning Laravel
+## What it does
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
+**Speaks real S3**
+Buckets and objects over the S3 REST API with **SigV4 request signing**, both
+path-style and virtual-host-style addressing, and multipart upload for large
+objects. Verified against the **official AWS CLI** and MinIO's `mc` client, not
+just against itself.
 
-In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+**Access keys that behave like AWS**
+Access key IDs and secrets, with the secret shown exactly once at creation.
+JSON access policies enforced per key, so a key can be scoped to one bucket or to
+read-only.
 
-You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
+**Data protection built in**
+Object versioning, Object Lock for write-once retention, and lifecycle rules that
+expire or transition objects on a schedule. **AES-256 encryption at rest.**
 
-## Agentic Development
+**Usage you can see**
+Per-bucket size and object counts, recalculated on a schedule, so you know what is
+actually stored rather than what someone thinks is stored.
 
-Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
+**Run it like production**
+Users and roles, two-factor authentication, an IP firewall with an escape hatch,
+API tokens, a full audit log, database backups, host and SSL settings, and
+in-place signed updates.
 
-```bash
-composer require laravel/boost --dev
+## Current state
 
-php artisan boost:install
+**Version 1.1.3.** The data plane is real and tested: uploads are stored,
+retrieved, versioned, locked, and expired as documented, and the protocol surface
+has been exercised with third-party S3 clients.
+
+Worth knowing, because it is the kind of thing a reader should be able to trust a
+README about: **an earlier build recorded metadata and discarded the file body.**
+That is fixed and the current version genuinely stores and serves object data.
+
+## Deployment note
+
+**Never put an S3 endpoint behind a proxy that rewrites headers.** Cloudflare's
+proxy strips `ETag`, which breaks multipart uploads and any client that verifies
+what it uploaded. Point DNS straight at the origin — grey cloud, no proxy — and
+terminate TLS on the host.
+
+## Install
+
+Point a fresh Debian or Ubuntu server at your domain and run, as root:
+
+```
+curl -fsSL https://install.scriptgain.com | sudo bash -s -- storage-mgr DOMAIN=storage.example.com SSL=1 EMAIL=you@example.com
 ```
 
-Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
+Then open `https://your.domain/setup` to create the first account and enter your
+licence key. Create a bucket and an access key, and point your S3 client at the
+endpoint.
 
-## Contributing
+## Where things live
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+| Surface | Path |
+| --- | --- |
+| Console | `/` |
+| First-run setup | `/setup` |
+| S3 API | the endpoint host you configure |
 
-## Code of Conduct
+## Running it
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+Buckets, keys, policies, lifecycle rules, and every operator setting are managed
+in the console rather than in files on the server.
 
-## Security Vulnerabilities
+Maintenance tasks from the command line:
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+| Command | What it does |
+| --- | --- |
+| `php artisan storage:maintenance` | Recalculates bucket usage, disables stale keys, prunes the audit log. |
+| `php artisan storage:lifecycle` | Applies lifecycle rules — expiries and transitions. |
+| `php artisan license:check-online` | Re-validates your licence. |
+| `php artisan app:update` | Applies a signed release. |
+| `php artisan db-backup:run` | Backs up the database. |
+| `php artisan firewall:clear` | Gets you back in if an IP rule locks you out. |
 
-## License
+## Requirements
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+A Linux server with PHP 8.3 and MySQL or MariaDB, and disk. The database holds
+metadata; object bodies live on the filesystem you point it at, so size that
+volume for your data and keep it on something you can grow.
+
+## Licensing
+
+Validated against `https://scriptgain.com/v1`.
