@@ -3,7 +3,7 @@
 **S3-compatible object storage you run yourself.** By
 [ScriptGain](https://scriptgain.com).
 
-**[Try the live demo →](https://storage-demo.scriptgain.com)** — no signup required.
+**[Try the live demo →](https://storage-demo.scriptgain.com)** No signup required.
 
 > **Beta.** StorageMGR is not currently offered for sale. It runs in production
 > on ScriptGain infrastructure and the demo is live, but there is no purchase plan
@@ -55,7 +55,7 @@ That is fixed and the current version genuinely stores and serves object data.
 
 **Never put an S3 endpoint behind a proxy that rewrites headers.** Cloudflare's
 proxy strips `ETag`, which breaks multipart uploads and any client that verifies
-what it uploaded. Point DNS straight at the origin — grey cloud, no proxy — and
+what it uploaded. Point DNS straight at the origin (grey cloud, no proxy) and
 terminate TLS on the host.
 
 ## Install
@@ -88,7 +88,7 @@ Maintenance tasks from the command line:
 | Command | What it does |
 | --- | --- |
 | `php artisan storage:maintenance` | Recalculates bucket usage, disables stale keys, prunes the audit log. |
-| `php artisan storage:lifecycle` | Applies lifecycle rules — expiries and transitions. |
+| `php artisan storage:lifecycle` | Applies lifecycle rules: expiries and transitions. |
 | `php artisan license:check-online` | Re-validates your licence. |
 | `php artisan app:update` | Applies a signed release. |
 | `php artisan db-backup:run` | Backs up the database. |
