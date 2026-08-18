@@ -617,6 +617,13 @@ class S3Controller extends Controller
             'ETag' => '"'.$o->etag.'"',
             'Last-Modified' => ($o->last_modified ?? $o->updated_at)->toRfc7231String(),
             'Accept-Ranges' => 'bytes',
+            // Object contents are attacker-supplied. If the endpoint is ever
+            // served from the same origin as the console (path-style under /s3
+            // rather than a dedicated STORAGE_S3_DOMAIN), an HTML/SVG object
+            // opened in a browser would otherwise run as script on this origin.
+            // nosniff stops the browser second-guessing the stored type; real
+            // S3 relies on a separate host, which we still recommend.
+            'X-Content-Type-Options' => 'nosniff',
         ];
 
         // Range requests matter for large objects: without them clients cannot
