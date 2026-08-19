@@ -45,6 +45,9 @@ class SignatureV4
         if (! $key) {
             return 'InvalidAccessKeyId';
         }
+        // Stays AccessDenied: the key exists, it is switched off. Now
+        // unambiguous, because a missing Authorization header no longer
+        // produces this same code.
         if ($key->status !== 'active') {
             return 'AccessDenied';
         }
@@ -85,8 +88,22 @@ class SignatureV4
         }
 
         $header = (string) $request->header('Authorization');
-        if ($header === '' || ! str_starts_with($header, self::ALGORITHM)) {
-            return 'AccessDenied';
+
+        // An absent Authorization header is almost never the client's fault. The
+        // usual cause is nginx: it does not pass Authorization to FastCGI on its
+        // own and fastcgi_params does not define it, so a vhost missing
+        //
+        //     fastcgi_param HTTP_AUTHORIZATION $http_authorization;
+        //
+        // rejects every signed request while presigned URLs, which carry their
+        // credentials in the query string, keep working perfectly. Returning a
+        // bare AccessDenied for that sends the operator hunting a key or a policy
+        // problem that does not exist. Say which it is.
+        if ($header === '') {
+            return 'MissingSecurityHeader';
+        }
+        if (! str_starts_with($header, self::ALGORITHM)) {
+            return 'AuthorizationHeaderMalformed';
         }
 
         // AWS4-HMAC-SHA256 Credential=AKIA.../20260720/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=abc...
