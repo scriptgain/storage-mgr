@@ -101,11 +101,32 @@ server {
     index index.php;
     charset utf-8;
     location / { try_files \$uri \$uri/ /index.php?\$query_string; }
+
+    # The S3 API has to be matched BEFORE the dotfile rule at the bottom.
+    #
+    # Object keys legitimately begin with a dot: kopia stores .storageconfig and
+    # .shards, and it reads .storageconfig first, so a denied key does not hide a
+    # file, it makes the whole backend unusable from the first request. "^~"
+    # outranks a regex location, so this wins over the deny below.
+    location ^~ /s3 { try_files /nonexistent /index.php\$is_args\$args; }
+
     location ~ \.php\$ {
         fastcgi_pass unix:/run/php/php${PHP_VER}-fpm.sock;
         fastcgi_param SCRIPT_FILENAME \$realpath_root\$fastcgi_script_name;
         include fastcgi_params;
+
+        # SigV4 signs the request and presents the signature in the Authorization
+        # header. nginx does NOT pass that header to FastCGI on its own, and
+        # fastcgi_params does not define it, so without this line the verifier
+        # receives an empty header and rejects every signed request as
+        # AccessDenied. Presigned URLs carry their credentials in the query
+        # string and keep working, which is what makes this so easy to miss:
+        # a browser or a presigned download succeeds while every real S3 client
+        # fails.
+        fastcgi_param HTTP_AUTHORIZATION \$http_authorization;
     }
+
+    # Applies to the site, not to /s3, which is matched above.
     location ~ /\.(?!well-known).* { deny all; }
 }
 NGINX
